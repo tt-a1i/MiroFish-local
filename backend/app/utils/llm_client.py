@@ -4,10 +4,15 @@ LLM客户端封装
 """
 
 import json
+import re
 from typing import Optional, Dict, Any, List
 from openai import OpenAI
 
 from ..config import Config
+
+# Reasoning models (deepseek-v4, glm-5, qwen3, kimi-k2) include thinking
+# tags in content that must be stripped before JSON parsing.
+_THINK_PATTERN = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
 
 
 class LLMClient:
@@ -35,7 +40,7 @@ class LLMClient:
         self,
         messages: List[Dict[str, str]],
         temperature: float = 0.7,
-        max_tokens: int = 4096,
+        max_tokens: int = 16384,
         response_format: Optional[Dict] = None
     ) -> str:
         """
@@ -61,13 +66,16 @@ class LLMClient:
             kwargs["response_format"] = response_format
         
         response = self.client.chat.completions.create(**kwargs)
-        return response.choices[0].message.content
+        content = response.choices[0].message.content
+        # Reasoning models may include thinking tags in content
+        content = _THINK_PATTERN.sub("", content).strip()
+        return content
     
     def chat_json(
         self,
         messages: List[Dict[str, str]],
         temperature: float = 0.3,
-        max_tokens: int = 4096
+        max_tokens: int = 16384
     ) -> Dict[str, Any]:
         """
         发送聊天请求并返回JSON
@@ -86,6 +94,13 @@ class LLMClient:
             max_tokens=max_tokens,
             response_format={"type": "json_object"}
         )
-        
-        return json.loads(response)
+        # Clean markdown code block markers
+        cleaned_response = response.strip()
+        cleaned_response = re.sub(r"^\`\`\`(?:json)?\s*\n?", "", cleaned_response, flags=re.IGNORECASE)
+        cleaned_response = re.sub(r"\n?\`\`\`\s*$", "", cleaned_response)
+        cleaned_response = cleaned_response.strip()
 
+        try:
+            return json.loads(cleaned_response)
+        except json.JSONDecodeError:
+            raise ValueError(f"LLM返回的JSON格式无效: {cleaned_response}")
