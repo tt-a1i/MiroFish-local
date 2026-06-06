@@ -2,7 +2,7 @@ name: Build and push Docker image
 
 on:
   push:
-    branches: [main]
+    branches: [feat/zep-localization-mvp]
     tags: ["v*"]
   workflow_dispatch:
 
