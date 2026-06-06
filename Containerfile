@@ -29,7 +29,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # --- Python simulation venv: oasis (isolated, conflicts with graphiti) ---
 RUN cd backend \
     && uv venv .venv-simulation --python 3.11 --seed \
-    && .venv-simulation/bin/uv pip install --no-cache-dir \
+    && uv pip install --python .venv-simulation/bin/python --no-cache-dir \
          camel-oasis==0.2.5 camel-ai==0.2.78 openai python-dotenv
 
 # ── Stage 2: Runtime ──
