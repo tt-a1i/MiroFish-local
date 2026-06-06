@@ -1,0 +1,35 @@
+# Version control
+.git
+.gitignore
+
+# CI/CD
+.github
+
+# IDE
+.vscode
+.idea
+
+# Testing
+tests/
+**/__pycache__/
+**/*.pyc
+*.log
+
+# Environment
+.env
+.env.local
+.env.example
+
+# Documentation
+docs/
+examples/
+*.md
+README.md
+
+# Docker
+Containerfile
+docker-compose*.yml
+
+# Misc
+demo.py
+static/
