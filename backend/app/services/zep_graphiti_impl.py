@@ -1,16 +1,16 @@
 """
-Graphiti 本地客户端实现
+Graphiti local client implementation
 
-使用 graphiti-core + Neo4j 实现本地知识图谱服务。
-替代 Zep Cloud，实现 ZepClientAdapter 接口。
+Uses graphiti-core + Neo4j to implement a local knowledge graph service.
+Replaces Zep Cloud, implements the ZepClientAdapter interface.
 
-MVP 范围：
-- 图谱创建/删除（使用 group_id 隔离）
-- Episode 添加（单条/批量）
-- 节点/边检索
-- 语义搜索
+MVP scope:
+- Graph creation/deletion (isolated by group_id)
+- Episode addition (single/batch)
+- Node/edge retrieval
+- Semantic search
 
-Ontology 在 MVP 阶段先 no-op。
+Ontology is a no-op in the MVP phase.
 """
 
 import asyncio
@@ -33,10 +33,10 @@ logger = logging.getLogger('mirofish.graphiti_client')
 
 
 # ============================================================================
-# 单后台线程 + 专用事件循环（方案 A）
+# Single background thread + dedicated event loop (Plan A)
 # ============================================================================
-# 所有 Graphiti/Neo4j 异步操作都在这个专用线程的事件循环中执行
-# Flask 线程通过 run_coroutine_threadsafe 提交任务并等待结果
+# All Graphiti/Neo4j async operations run in this dedicated thread's event loop
+# Flask threads submit tasks via run_coroutine_threadsafe and wait for results
 # ============================================================================
 
 _async_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -45,16 +45,16 @@ _init_lock = threading.Lock()
 
 
 def _start_async_loop():
-    """在后台线程中启动事件循环"""
+    """Start the event loop in a background thread"""
     global _async_loop
     _async_loop = asyncio.new_event_loop()
     asyncio.set_event_loop(_async_loop)
-    logger.info("Graphiti 专用事件循环已启动")
+    logger.info("Graphiti dedicated event loop started")
     _async_loop.run_forever()
 
 
 def _ensure_async_loop():
-    """确保后台事件循环已启动"""
+    """Ensure the background event loop is started"""
     global _async_thread
     if _async_thread is None or not _async_thread.is_alive():
         with _init_lock:
@@ -65,7 +65,7 @@ def _ensure_async_loop():
                     name="graphiti-async-loop"
                 )
                 _async_thread.start()
-                # 等待循环启动
+                # Wait for the loop to start
                 while _async_loop is None:
                     import time
                     time.sleep(0.01)
@@ -73,43 +73,43 @@ def _ensure_async_loop():
 
 def _run_async(coro):
     """
-    在同步上下文中运行异步协程
+    Run an async coroutine in a synchronous context
 
-    使用专用后台线程的事件循环，通过 run_coroutine_threadsafe 提交任务。
-    这样 Neo4j driver 始终绑定到同一个循环，避免跨循环问题。
+    Uses the dedicated background thread's event loop, submitting tasks via run_coroutine_threadsafe.
+    This ensures the Neo4j driver stays bound to the same loop, avoiding cross-loop issues.
     """
     _ensure_async_loop()
     future = asyncio.run_coroutine_threadsafe(coro, _async_loop)
-    return future.result(timeout=300)  # 5分钟超时
+    return future.result(timeout=300)  # 5 minute timeout
 
 
 class DashScopeEmbedderWrapper:
     """
-    DashScope 兼容的 Embedder 包装器
+    DashScope-compatible Embedder wrapper
 
-    DashScope API 有批次大小限制（max 10），graphiti-core 的 OpenAIEmbedder
-    会将所有输入一次性发送。此包装器对请求进行分块处理。
+    DashScope API has a batch size limit (max 10), and graphiti-core's OpenAIEmbedder
+    sends all input at once. This wrapper chunks requests accordingly.
 
-    注意：此类动态继承 EmbedderClient 以满足 Pydantic 类型检查。
+    Note: This class dynamically inherits from EmbedderClient to satisfy Pydantic type checks.
     """
 
     def __init__(self, embedder: Any, max_batch_size: int = 10):
         self._embedder = embedder
         self.max_batch_size = max_batch_size
-        # 复制原 embedder 的属性以保持兼容性
+        # Copy original embedder attributes for compatibility
         if hasattr(embedder, 'config'):
             self.config = embedder.config
 
     async def create(self, input_data) -> list[float]:
-        """单条 embedding 请求（直接透传）"""
+        """Single embedding request (pass-through)"""
         return await self._embedder.create(input_data)
 
     async def create_batch(self, input_data_list: list[str]) -> list[list[float]]:
-        """批量 embedding 请求（分块处理）"""
+        """Batch embedding request (chunked processing)"""
         if len(input_data_list) <= self.max_batch_size:
             return await self._embedder.create_batch(input_data_list)
 
-        # 分块处理
+        # Chunked processing
         results = []
         for i in range(0, len(input_data_list), self.max_batch_size):
             chunk = input_data_list[i : i + self.max_batch_size]
@@ -120,15 +120,15 @@ class DashScopeEmbedderWrapper:
 
 def _create_dashscope_embedder_wrapper(base_embedder: Any, max_batch_size: int = 10) -> Any:
     """
-    创建 DashScope 兼容的 Embedder 包装器
+    Create a DashScope-compatible Embedder wrapper
 
-    动态继承 EmbedderClient 以满足 graphiti-core 的 Pydantic 类型检查。
+    Dynamically inherits from EmbedderClient to satisfy graphiti-core's Pydantic type checks.
     """
     try:
         from graphiti_core.embedder.client import EmbedderClient
 
         class _DashScopeEmbedderClient(EmbedderClient):
-            """动态生成的 EmbedderClient 子类"""
+            """Dynamically generated EmbedderClient subclass"""
 
             def __init__(self, embedder: Any, batch_size: int):
                 self._embedder = embedder
@@ -153,16 +153,16 @@ def _create_dashscope_embedder_wrapper(base_embedder: Any, max_batch_size: int =
         return _DashScopeEmbedderClient(base_embedder, max_batch_size)
 
     except ImportError:
-        # fallback: 返回普通包装器
+        # fallback: return plain wrapper
         return DashScopeEmbedderWrapper(base_embedder, max_batch_size)
 
 
 class GraphitiClient(ZepClientAdapter):
     """
-    Graphiti 本地客户端实现
+    Graphiti local client implementation
 
-    使用 graphiti-core 库连接 Neo4j 图数据库。
-    通过 group_id 参数实现多图谱隔离（对应 MiroFish 的 graph_id）。
+    Uses the graphiti-core library to connect to the Neo4j graph database.
+    Multi-graph isolation is achieved via the group_id parameter (maps to MiroFish's graph_id).
     """
 
     def __init__(
@@ -174,14 +174,14 @@ class GraphitiClient(ZepClientAdapter):
         embedder: Optional[Any] = None,
     ):
         """
-        初始化 Graphiti 客户端
+        Initialize the Graphiti client
 
         Args:
-            neo4j_uri: Neo4j Bolt 连接 URI (如 bolt://localhost:7687)
-            neo4j_user: Neo4j 用户名
-            neo4j_password: Neo4j 密码
-            llm_client: 可选的 LLM 客户端（用于实体抽取）
-            embedder: 可选的 Embedder（用于语义搜索）
+            neo4j_uri: Neo4j Bolt connection URI (e.g. bolt://localhost:7687)
+            neo4j_user: Neo4j username
+            neo4j_password: Neo4j password
+            llm_client: Optional LLM client (for entity extraction)
+            embedder: Optional Embedder (for semantic search)
         """
         self.neo4j_uri = neo4j_uri
         self.neo4j_user = neo4j_user
@@ -189,26 +189,26 @@ class GraphitiClient(ZepClientAdapter):
         self._llm_client = llm_client
         self._embedder = embedder
 
-        # 延迟初始化 Graphiti 实例
+        # Lazy-initialize Graphiti instance
         self._graphiti = None
         self._driver = None
         self._initialized = False
 
-        # 记录创建的 graph_id（用于 group_id 映射）
+        # Track created graph_ids (for group_id mapping)
         self._graph_metadata: Dict[str, Dict[str, Any]] = {}
 
-        # 存储 ontology 定义（MVP 阶段仅记录，不强制执行）
+        # Store ontology definitions (MVP phase: record only, not enforced)
         self._ontology_cache: Dict[str, Dict[str, Any]] = {}
 
     def _ensure_initialized(self):
-        """确保 Graphiti 已初始化"""
+        """Ensure Graphiti is initialized"""
         if self._initialized:
             return
 
         try:
             from graphiti_core import Graphiti
 
-            # 应用 Neo4j 属性 sanitization patch (Issue #683 workaround)
+            # Apply Neo4j property sanitization patch (Issue #683 workaround)
             from .graphiti_patch import apply_patch
             apply_patch()
 
@@ -220,7 +220,7 @@ class GraphitiClient(ZepClientAdapter):
             if embedder is None:
                 embedder = self._build_default_embedder()
 
-            # 创建 Graphiti 实例
+            # Create Graphiti instance
             self._graphiti = Graphiti(
                 self.neo4j_uri,
                 self.neo4j_user,
@@ -229,31 +229,31 @@ class GraphitiClient(ZepClientAdapter):
                 embedder=embedder,
             )
 
-            # 初始化索引和约束
+            # Initialize indices and constraints
             _run_async(self._graphiti.build_indices_and_constraints())
 
-            # 获取底层 Neo4j driver 用于直接查询
+            # Get the underlying Neo4j driver for direct queries
             self._driver = self._graphiti.driver
 
             self._initialized = True
-            logger.info("Graphiti 客户端初始化完成")
+            logger.info("Graphiti client initialized successfully")
 
         except ImportError as e:
             raise ImportError(
-                "graphiti-core 未安装。请运行: pip install graphiti-core"
+                "graphiti-core is not installed. Run: pip install graphiti-core"
             ) from e
         except Exception as e:
-            logger.error(f"Graphiti 初始化失败: {e}")
+            logger.error(f"Graphiti initialization failed: {e}")
             raise
 
     def _build_default_llm_client(self) -> Any:
         """
-        构建 Graphiti 默认 LLM client（OpenAI-compatible）
+        Build Graphiti default LLM client (OpenAI-compatible)
 
-        Graphiti 默认会用 `gpt-4.1-mini`，对 DashScope 这类 OpenAI-compatible 服务通常不适用；
-        这里优先使用：
-        - GRAPHITI_LLM_MODEL（如有）
-        - 否则使用 LLM_MODEL_NAME（与 MiroFish 现有配置保持一致）
+        Graphiti defaults to `gpt-4.1-mini`, which is usually unsuitable for
+        OpenAI-compatible services like DashScope; this method prefers:
+        - GRAPHITI_LLM_MODEL (if set)
+        - Otherwise LLM_MODEL_NAME (consistent with MiroFish existing config)
         """
         from graphiti_core.llm_client.config import LLMConfig
         from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
@@ -278,12 +278,12 @@ class GraphitiClient(ZepClientAdapter):
 
     def _build_default_embedder(self) -> Any:
         """
-        构建 Graphiti 默认 Embedder（OpenAI-compatible /embeddings）
+        Build Graphiti default Embedder (OpenAI-compatible /embeddings)
 
-        默认 embedding model 是 `text-embedding-3-small`（OpenAI），DashScope 下需要显式配置：
+        Default embedding model is `text-embedding-3-small` (OpenAI); under DashScope, explicit config is needed:
         - GRAPHITI_EMBEDDING_MODEL=text-embedding-v4
 
-        注意：DashScope API 有批次大小限制（max 10），使用 DashScopeEmbedderWrapper 处理。
+        Note: DashScope API has a batch size limit (max 10), handled by DashScopeEmbedderWrapper.
         """
         from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
 
@@ -305,42 +305,42 @@ class GraphitiClient(ZepClientAdapter):
 
         base_embedder = OpenAIEmbedder(config=config)
 
-        # DashScope API 有批次大小限制，需要包装
+        # DashScope API has batch size limits, need wrapping
         if self._is_openai_compatible_only():
-            logger.info("检测到非标准 OpenAI API，启用 DashScope Embedder 分块处理")
+            logger.info("Detected non-standard OpenAI API, enabling DashScope Embedder chunked processing")
             return _create_dashscope_embedder_wrapper(base_embedder, max_batch_size=10)
 
         return base_embedder
 
-    # ==================== Graph 操作 ====================
+    # ==================== Graph Operations ====================
 
     def create_graph(self, graph_id: str, name: str, description: str) -> None:
         """
-        创建图谱（在 Graphiti 中通过 group_id 隔离）
+        Create a graph (isolated via group_id in Graphiti)
 
-        Graphiti 没有显式的图谱创建 API，数据通过 group_id 自动隔离。
-        这里仅记录元数据，实际数据在 add_episode 时创建。
+        Graphiti has no explicit graph creation API; data is automatically isolated by group_id.
+        This only records metadata; actual data is created when add_episode is called.
         """
         self._graph_metadata[graph_id] = {
             "name": name,
             "description": description,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
-        logger.info(f"图谱元数据已记录: graph_id={graph_id}, name={name}")
+        logger.info(f"Graph metadata recorded: graph_id={graph_id}, name={name}")
 
     def delete_graph(self, graph_id: str) -> None:
         """
-        删除图谱（删除 group_id 相关的所有数据）
+        Delete a graph (remove all data associated with the group_id)
 
-        使用 Cypher 直接删除 Neo4j 中 group_id 匹配的所有节点和边。
-        Graphiti 的所有节点（Entity、Episodic 等）都带 group_id 属性，
-        一个通用查询即可覆盖。
+        Uses Cypher to directly delete all nodes and edges matching the group_id in Neo4j.
+        All Graphiti nodes (Entity, Episodic, etc.) carry a group_id property,
+        so a single generic query covers everything.
         """
         self._ensure_initialized()
 
         async def _delete():
-            # 删除所有带有此 group_id 的节点（级联删除边）
-            # Graphiti 的 Entity 和 Episodic 节点都带 group_id，无需分别删除
+            # Delete all nodes with this group_id (cascade deletes edges)
+            # Graphiti's Entity and Episodic nodes both carry group_id, no need to delete separately
             result = await self._driver.execute_query(
                 """
                 MATCH (n {group_id: $group_id})
@@ -351,14 +351,14 @@ class GraphitiClient(ZepClientAdapter):
             )
             records = result.records if hasattr(result, 'records') else result[0]
             deleted = records[0]['deleted_count'] if records else 0
-            logger.debug(f"删除了 {deleted} 个节点 (group_id={graph_id})")
+            logger.debug(f"Deleted {deleted} nodes (group_id={graph_id})")
 
         _run_async(_delete())
 
-        # 清理本地缓存
+        # Clear local caches
         self._graph_metadata.pop(graph_id, None)
         self._ontology_cache.pop(graph_id, None)
-        logger.info(f"图谱已删除: graph_id={graph_id}")
+        logger.info(f"Graph deleted: graph_id={graph_id}")
 
     def set_ontology(
         self,
@@ -367,16 +367,16 @@ class GraphitiClient(ZepClientAdapter):
         edges: Optional[Dict[str, Any]] = None
     ) -> None:
         """
-        设置图谱本体
+        Set graph ontology
 
-        MVP 说明：Graphiti 不支持与 Zep Cloud 完全相同的 ontology API。
-        这里仅缓存定义，可用于：
-        1. 添加 episode 时作为 prompt 提示
-        2. 后续对齐时做类型映射
+        MVP note: Graphiti does not support the same ontology API as Zep Cloud.
+        Definitions are cached here and can be used for:
+        1. Prompt hints when adding episodes
+        2. Type mapping during future alignment
 
-        Full parity 阶段可实现：
-        - 动态生成 Pydantic Entity/Edge 模型传递给 add_episode
-        - 在 Neo4j 中创建类型约束
+        Full parity phase can implement:
+        - Dynamic Pydantic Entity/Edge model generation passed to add_episode
+        - Type constraint creation in Neo4j
         """
         for graph_id in graph_ids:
             self._ontology_cache[graph_id] = {
@@ -384,19 +384,19 @@ class GraphitiClient(ZepClientAdapter):
                 "edges": edges or {},
             }
             logger.info(
-                f"Ontology 已缓存 (MVP no-op): graph_id={graph_id}, "
+                f"Ontology cached (MVP no-op): graph_id={graph_id}, "
                 f"entity_types={len(entities or {})}, edge_types={len(edges or {})}"
             )
 
-    # ==================== Episode 操作 ====================
+    # ==================== Episode Operations ====================
 
     def add_episode(self, graph_id: str, data: str, episode_type: str = "text") -> str:
-        """添加单条 episode"""
+        """Add a single episode"""
         self._ensure_initialized()
 
         from graphiti_core.nodes import EpisodeType
 
-        # 映射 episode_type
+        # Map episode_type
         source_type = EpisodeType.text
         if episode_type == "message":
             source_type = EpisodeType.message
@@ -421,13 +421,13 @@ class GraphitiClient(ZepClientAdapter):
         graph_id: str,
         episodes: List[Dict[str, Any]]
     ) -> List[str]:
-        """批量添加 episode"""
+        """Add episodes in batch"""
         self._ensure_initialized()
 
         from graphiti_core.nodes import EpisodeType
         from graphiti_core.utils.bulk_utils import RawEpisode
 
-        # 构建 RawEpisode 列表
+        # Build RawEpisode list
         raw_episodes = []
         for i, ep in enumerate(episodes):
             ep_type = ep.get("type", "text")
@@ -452,36 +452,36 @@ class GraphitiClient(ZepClientAdapter):
                 bulk_episodes=raw_episodes,
                 group_id=graph_id,
             )
-            # 返回所有 episode UUID
+            # Return all episode UUIDs
             return [ep.uuid for ep in result.episodes] if result and result.episodes else []
 
         return _run_async(_add_bulk())
 
     def get_episode_status(self, episode_uuid: str) -> EpisodeStatus:
         """
-        获取 episode 处理状态
+        Get episode processing status
 
-        Graphiti 同步处理 episode，添加完成即为已处理。
+        Graphiti processes episodes synchronously; once added, they are considered processed.
         """
         return EpisodeStatus(uuid=episode_uuid, processed=True)
 
     def wait_for_episode(self, episode_uuid: str, timeout: int = 300) -> bool:
         """
-        等待 episode 处理完成
+        Wait for episode processing to complete
 
-        Graphiti 同步处理，直接返回 True。
+        Graphiti processes synchronously, so always returns True immediately.
         """
         return True
 
-    # ==================== Node 操作 ====================
+    # ==================== Node Operations ====================
 
     def get_all_nodes(self, graph_id: str) -> List[GraphNode]:
-        """获取图谱所有节点"""
+        """Get all nodes in the graph"""
         self._ensure_initialized()
 
         async def _get_nodes():
-            # 尝试多种 label 模式，提高 schema 兼容性
-            # Graphiti 标准使用 :Entity，但也可能有其他 label
+            # Try multiple label patterns for schema compatibility
+            # Graphiti standard uses :Entity, but other labels may exist
             for label in ["Entity", "EntityNode"]:
                 records, _, _ = await self._driver.execute_query(
                     f"""
@@ -499,10 +499,10 @@ class GraphitiClient(ZepClientAdapter):
                 if records:
                     return records
 
-            # 所有 label 都没找到，记录警告并返回空
+            # No labels found, log warning and return empty
             logger.warning(
-                f"get_all_nodes: 未找到 group_id={graph_id} 的节点。"
-                f"可能的原因：1) 图谱为空 2) Graphiti schema 不匹配（尝试过 Entity, EntityNode）"
+                f"get_all_nodes: no nodes found for group_id={graph_id}. "
+                f"Possible causes: 1) graph is empty 2) Graphiti schema mismatch (tried Entity, EntityNode)"
             )
             return []
 
@@ -510,7 +510,7 @@ class GraphitiClient(ZepClientAdapter):
         nodes = []
         for record in records:
             props = record.get("props", {})
-            # 过滤掉已单独提取的属性
+            # Filter out already-extracted properties
             attributes = {
                 k: v for k, v in props.items()
                 if k not in ["uuid", "name", "summary", "created_at", "group_id"]
@@ -532,11 +532,11 @@ class GraphitiClient(ZepClientAdapter):
         return nodes
 
     def get_node(self, node_uuid: str) -> Optional[GraphNode]:
-        """获取单个节点"""
+        """Get a single node"""
         self._ensure_initialized()
 
         async def _get_node():
-            # 按 uuid 查找节点，不限定 label（更灵活）
+            # Find node by uuid without restricting label (more flexible)
             records, _, _ = await self._driver.execute_query(
                 """
                 MATCH (n {uuid: $uuid})
@@ -555,7 +555,7 @@ class GraphitiClient(ZepClientAdapter):
 
         records = _run_async(_get_node())
         if not records:
-            logger.debug(f"get_node: 未找到 uuid={node_uuid} 的节点")
+            logger.debug(f"get_node: node not found for uuid={node_uuid}")
             return None
 
         record = records[0]
@@ -580,12 +580,12 @@ class GraphitiClient(ZepClientAdapter):
         )
 
     def get_node_edges(self, node_uuid: str) -> List[GraphEdge]:
-        """获取节点的所有相关边（双向）"""
+        """Get all edges related to a node (bidirectional)"""
         self._ensure_initialized()
 
         async def _get_edges():
-            # 不限定节点 label，按 uuid 匹配，获取双向边
-            # 优先用 r.name（实际关系名），fallback 到 type(r)（关系类型）
+            # Match by uuid without restricting node label, get bidirectional edges
+            # Prefer r.name (actual relation name), fall back to type(r) (relation type)
             records, _, _ = await self._driver.execute_query(
                 """
                 MATCH (n {uuid: $uuid})-[r]-(m)
@@ -607,19 +607,19 @@ class GraphitiClient(ZepClientAdapter):
 
         records = _run_async(_get_edges())
         if not records:
-            logger.debug(f"get_node_edges: 节点 uuid={node_uuid} 没有关联的边")
+            logger.debug(f"get_node_edges: no edges associated with node uuid={node_uuid}")
         return [self._record_to_edge(record) for record in records]
 
-    # ==================== Edge 操作 ====================
+    # ==================== Edge Operations ====================
 
     def get_all_edges(self, graph_id: str) -> List[GraphEdge]:
-        """获取图谱所有边（通过节点的 group_id 过滤）"""
+        """Get all edges in the graph (filtered by node group_id)"""
         self._ensure_initialized()
 
         async def _get_edges():
-            # 通过节点的 group_id 过滤边，使用 DISTINCT 避免重复
-            # 注意：边本身可能没有 group_id，所以通过连接的节点过滤
-            # 优先用 r.name（实际关系名），fallback 到 type(r)（关系类型）
+            # Filter edges by node group_id, use DISTINCT to avoid duplicates
+            # Note: edges themselves may not have group_id, so filter through connected nodes
+            # Prefer r.name (actual relation name), fall back to type(r) (relation type)
             for label in ["Entity", "EntityNode"]:
                 records, _, _ = await self._driver.execute_query(
                     f"""
@@ -643,37 +643,37 @@ class GraphitiClient(ZepClientAdapter):
                     return records
 
             logger.warning(
-                f"get_all_edges: 未找到 group_id={graph_id} 的边。"
-                f"可能的原因：1) 图谱无边 2) Graphiti schema 不匹配"
+                f"get_all_edges: no edges found for group_id={graph_id}. "
+                f"Possible causes: 1) graph has no edges 2) Graphiti schema mismatch"
             )
             return []
 
         records = _run_async(_get_edges())
         return [self._record_to_edge(record) for record in records]
 
-    # ==================== Search 操作 ====================
+    # ==================== Search Operations ====================
 
     def _is_openai_compatible_only(self) -> bool:
         """
-        检测是否使用非标准 OpenAI API（如 DashScope、Azure 等）
+        Detect whether a non-standard OpenAI API is in use (e.g. DashScope, Azure)
 
-        这些 API 可能不支持 cross_encoder 需要的 logprobs 功能，
-        需要 fallback 到 RRF 重排序。
+        These APIs may not support the logprobs feature required by cross_encoder,
+        requiring a fallback to RRF re-ranking.
 
-        可通过 GRAPHITI_FORCE_CROSS_ENCODER=true 强制使用 cross_encoder
-        （适用于确认支持 logprobs 的兼容服务）。
+        Set GRAPHITI_FORCE_CROSS_ENCODER=true to force cross_encoder usage
+        (for compatible services confirmed to support logprobs).
         """
         import os
 
-        # 显式覆盖：强制使用 cross_encoder
+        # Explicit override: force cross_encoder
         if os.environ.get('GRAPHITI_FORCE_CROSS_ENCODER', '').lower() in ('true', '1', 'yes'):
             return False
 
         base_url = os.environ.get('OPENAI_BASE_URL', '')
-        # 标准 OpenAI API
+        # Standard OpenAI API
         if not base_url or 'api.openai.com' in base_url:
             return False
-        # 非标准 API（DashScope、Azure、本地部署等）
+        # Non-standard API (DashScope, Azure, local deployments, etc.)
         non_standard_indicators = [
             'dashscope', 'aliyun', 'azure', 'localhost',
             'ollama', 'vllm', 'lmstudio', 'openrouter'
@@ -686,22 +686,22 @@ class GraphitiClient(ZepClientAdapter):
         query: str,
         limit: int = 10,
         scope: str = "edges",
-        reranker: str = "rrf"  # 默认改为 rrf，更安全
+        reranker: str = "rrf"  # Default changed to rrf for safety
     ) -> SearchResult:
         """
-        图谱混合搜索
+        Graph hybrid search
 
-        使用 Graphiti 公开的 search_() API（带 config）进行搜索。
-        如果 search_() 不可用，fallback 到简单的 search() API。
+        Uses Graphiti's public search_() API (with config) for searching.
+        Falls back to the simple search() API if search_() is unavailable.
 
-        注意：reranker="cross_encoder" 需要 OpenAI API 支持 logprobs，
-        非标准 API（如 DashScope）会自动降级为 rrf。
+        Note: reranker="cross_encoder" requires OpenAI API logprobs support;
+        non-standard APIs (e.g. DashScope) are automatically downgraded to rrf.
         """
         self._ensure_initialized()
 
-        # 非标准 OpenAI API 不支持 cross_encoder，强制使用 rrf
+        # Non-standard OpenAI API does not support cross_encoder, force rrf
         if reranker == "cross_encoder" and self._is_openai_compatible_only():
-            logger.info("检测到非标准 OpenAI API，cross_encoder 降级为 rrf")
+            logger.info("Detected non-standard OpenAI API, cross_encoder downgraded to rrf")
             reranker = "rrf"
 
         from graphiti_core.search.search_config_recipes import (
@@ -714,27 +714,27 @@ class GraphitiClient(ZepClientAdapter):
             nodes = []
             edges = []
 
-            # 检查是否有 search_() 方法（公开的高级搜索 API）
+            # Check if search_() method exists (public advanced search API)
             has_search_method = hasattr(self._graphiti, 'search_')
 
             if not has_search_method:
-                # Fallback: 使用简单的 search() API
-                logger.info("使用 graphiti.search() 简单 API（search_() 不可用）")
+                # Fallback: use simple search() API
+                logger.info("Using graphiti.search() simple API (search_() unavailable)")
                 try:
                     results = await self._graphiti.search(
                         query=query,
                         group_ids=[graph_id],
                         num_results=limit,
                     )
-                    # 简单 search 主要返回边
+                    # Simple search primarily returns edges
                     if results:
                         edges = list(results) if not isinstance(results, list) else results
                     return nodes, edges
                 except Exception as e:
-                    logger.warning(f"graphiti.search() 失败: {e}，返回空结果")
+                    logger.warning(f"graphiti.search() failed: {e}, returning empty results")
                     return [], []
 
-            # 使用 search_() 高级 API
+            # Use search_() advanced API
             try:
                 if scope == "nodes":
                     config = NODE_HYBRID_SEARCH_RRF.model_copy(deep=True)
@@ -771,7 +771,7 @@ class GraphitiClient(ZepClientAdapter):
                             nodes = result.nodes or [] if hasattr(result, 'nodes') else []
                             edges = result.edges or [] if hasattr(result, 'edges') else []
                     else:
-                        # 分别搜索 nodes 和 edges
+                        # Search nodes and edges separately
                         node_config = NODE_HYBRID_SEARCH_RRF.model_copy(deep=True)
                         node_config.limit = limit // 2
                         edge_config = EDGE_HYBRID_SEARCH_RRF.model_copy(deep=True)
@@ -790,8 +790,8 @@ class GraphitiClient(ZepClientAdapter):
                             edges = edge_result.edges or []
 
             except Exception as e:
-                logger.warning(f"graphiti.search_() 失败: {e}，尝试 fallback")
-                # Fallback 到简单搜索
+                logger.warning(f"graphiti.search_() failed: {e}, attempting fallback")
+                # Fallback to simple search
                 try:
                     results = await self._graphiti.search(
                         query=query,
@@ -801,25 +801,25 @@ class GraphitiClient(ZepClientAdapter):
                     if results:
                         edges = list(results) if not isinstance(results, list) else results
                 except Exception as fallback_e:
-                    logger.error(f"search fallback 也失败: {fallback_e}")
+                    logger.error(f"search fallback also failed: {fallback_e}")
 
             return nodes, edges
 
         raw_nodes, raw_edges = _run_async(_do_search())
 
         if not raw_nodes and not raw_edges:
-            logger.debug(f"search: query='{query}' group_id={graph_id} 无结果")
+            logger.debug(f"search: query='{query}' group_id={graph_id} no results")
 
-        # 转换为适配器数据结构
+        # Convert to adapter data structures
         nodes = [self._graphiti_node_to_graph_node(n) for n in raw_nodes]
         edges = [self._graphiti_edge_to_graph_edge(e) for e in raw_edges]
 
         return SearchResult(nodes=nodes, edges=edges)
 
-    # ==================== 转换辅助方法 ====================
+    # ==================== Conversion Helpers ====================
 
     def _record_to_edge(self, record: Dict[str, Any]) -> GraphEdge:
-        """将 Neo4j 查询结果转换为 GraphEdge"""
+        """Convert Neo4j query result to GraphEdge"""
         props = record.get("props", {})
         attributes = {
             k: v for k, v in props.items()
@@ -844,12 +844,12 @@ class GraphitiClient(ZepClientAdapter):
             valid_at=_format_time(record.get("valid_at")),
             invalid_at=_format_time(record.get("invalid_at")),
             expired_at=_format_time(record.get("expired_at")),
-            episodes=[],  # Graphiti 边可能没有 episodes 字段
+            episodes=[],  # Graphiti edges may not have an episodes field
             fact_type=record.get("name", ""),
         )
 
     def _graphiti_node_to_graph_node(self, node: Any) -> GraphNode:
-        """将 Graphiti 节点对象转换为 GraphNode"""
+        """Convert a Graphiti node object to GraphNode"""
         created_at = getattr(node, 'created_at', None)
         if hasattr(created_at, 'isoformat'):
             created_at = created_at.isoformat()
@@ -866,7 +866,7 @@ class GraphitiClient(ZepClientAdapter):
         )
 
     def _graphiti_edge_to_graph_edge(self, edge: Any) -> GraphEdge:
-        """将 Graphiti 边对象转换为 GraphEdge"""
+        """Convert a Graphiti edge object to GraphEdge"""
         def _format_time(t):
             if t is None:
                 return None
@@ -890,14 +890,14 @@ class GraphitiClient(ZepClientAdapter):
         )
 
     def close(self):
-        """关闭连接"""
+        """Close the connection"""
         if self._graphiti:
             _run_async(self._graphiti.close())
             self._initialized = False
-            logger.info("Graphiti 连接已关闭")
+            logger.info("Graphiti connection closed")
 
     def __del__(self):
-        """析构时关闭连接"""
+        """Close connection on destruction"""
         try:
             self.close()
         except Exception:

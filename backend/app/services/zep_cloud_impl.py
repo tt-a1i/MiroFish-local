@@ -1,8 +1,8 @@
 """
-Zep Cloud 客户端实现
+Zep Cloud client implementation
 
-包装现有 zep-cloud SDK，实现 ZepClientAdapter 接口。
-保持与原有代码逻辑一致，确保向后兼容。
+Wraps the existing zep-cloud SDK, implementing the ZepClientAdapter interface.
+Maintains consistency with existing code logic, ensuring backward compatibility.
 """
 
 from typing import Any, Dict, List, Optional
@@ -21,26 +21,26 @@ from .zep_adapter import (
 
 class ZepCloudClient(ZepClientAdapter):
     """
-    Zep Cloud 客户端实现
+    Zep Cloud client implementation
 
-    包装 zep-cloud SDK，将原生 API 响应转换为适配器数据结构。
+    Wraps zep-cloud SDK, converting native API responses to adapter data structures.
     """
 
     def __init__(self, api_key: str):
         """
-        初始化 Zep Cloud 客户端
+        Initialize Zep Cloud client
 
         Args:
             api_key: Zep Cloud API Key
         """
         if not api_key:
-            raise ValueError("ZEP_API_KEY 未配置")
+            raise ValueError("ZEP_API_KEY not configured")
         self.client = Zep(api_key=api_key)
 
-    # ==================== Graph 操作 ====================
+    # ==================== Graph operations ====================
 
     def create_graph(self, graph_id: str, name: str, description: str) -> None:
-        """创建 Zep 图谱"""
+        """Create Zep graph"""
         self.client.graph.create(
             graph_id=graph_id,
             name=name,
@@ -48,7 +48,7 @@ class ZepCloudClient(ZepClientAdapter):
         )
 
     def delete_graph(self, graph_id: str) -> None:
-        """删除图谱"""
+        """Delete graph"""
         self.client.graph.delete(graph_id=graph_id)
 
     def set_ontology(
@@ -58,9 +58,9 @@ class ZepCloudClient(ZepClientAdapter):
         edges: Optional[Dict[str, Any]] = None
     ) -> None:
         """
-        设置图谱本体
+        Set graph ontology
 
-        直接传递给 Zep Cloud API，entities 和 edges 应为已构建好的动态类。
+        Passed directly to the Zep Cloud API. Entities and edges should be pre-built dynamic classes.
         """
         if entities or edges:
             self.client.graph.set_ontology(
@@ -69,16 +69,16 @@ class ZepCloudClient(ZepClientAdapter):
                 edges=edges if edges else None,
             )
 
-    # ==================== Episode 操作 ====================
+    # ==================== Episode operations ====================
 
     def add_episode(self, graph_id: str, data: str, episode_type: str = "text") -> str:
-        """添加单条 episode"""
+        """Add a single episode"""
         result = self.client.graph.add(
             graph_id=graph_id,
             type=episode_type,
             data=data
         )
-        # 返回 episode UUID
+        # Return episode UUID
         return getattr(result, 'uuid_', None) or getattr(result, 'uuid', '') or ''
 
     def add_episode_batch(
@@ -86,7 +86,7 @@ class ZepCloudClient(ZepClientAdapter):
         graph_id: str,
         episodes: List[Dict[str, Any]]
     ) -> List[str]:
-        """批量添加 episode"""
+        """Batch add episodes"""
         episode_data_list = [
             EpisodeData(data=ep.get("data", ""), type=ep.get("type", "text"))
             for ep in episodes
@@ -97,7 +97,7 @@ class ZepCloudClient(ZepClientAdapter):
             episodes=episode_data_list
         )
 
-        # 提取所有 episode UUID
+        # Extract all episode UUIDs
         uuids = []
         if batch_result and isinstance(batch_result, list):
             for ep in batch_result:
@@ -107,22 +107,22 @@ class ZepCloudClient(ZepClientAdapter):
         return uuids
 
     def get_episode_status(self, episode_uuid: str) -> EpisodeStatus:
-        """获取 episode 处理状态"""
+        """Get episode processing status"""
         episode = self.client.graph.episode.get(uuid_=episode_uuid)
         return EpisodeStatus(
             uuid=episode_uuid,
             processed=getattr(episode, 'processed', False)
         )
 
-    # ==================== Node 操作 ====================
+    # ==================== Node operations ====================
 
     def get_all_nodes(self, graph_id: str) -> List[GraphNode]:
-        """获取图谱所有节点"""
+        """Get all nodes in a graph"""
         nodes = self.client.graph.node.get_by_graph_id(graph_id=graph_id)
         return [self._convert_node(node) for node in nodes]
 
     def get_node(self, node_uuid: str) -> Optional[GraphNode]:
-        """获取单个节点"""
+        """Get a single node"""
         try:
             node = self.client.graph.node.get(uuid_=node_uuid)
             return self._convert_node(node) if node else None
@@ -130,21 +130,21 @@ class ZepCloudClient(ZepClientAdapter):
             return None
 
     def get_node_edges(self, node_uuid: str) -> List[GraphEdge]:
-        """获取节点的所有相关边"""
+        """Get all edges related to a node"""
         try:
             edges = self.client.graph.node.get_entity_edges(node_uuid=node_uuid)
             return [self._convert_edge(edge) for edge in edges]
         except Exception:
             return []
 
-    # ==================== Edge 操作 ====================
+    # ==================== Edge operations ====================
 
     def get_all_edges(self, graph_id: str) -> List[GraphEdge]:
-        """获取图谱所有边"""
+        """Get all edges in a graph"""
         edges = self.client.graph.edge.get_by_graph_id(graph_id=graph_id)
         return [self._convert_edge(edge) for edge in edges]
 
-    # ==================== Search 操作 ====================
+    # ==================== Search operations ====================
 
     def search(
         self,
@@ -154,7 +154,7 @@ class ZepCloudClient(ZepClientAdapter):
         scope: str = "edges",
         reranker: str = "cross_encoder"
     ) -> SearchResult:
-        """图谱混合搜索"""
+        """Graph hybrid search"""
         search_result = self.client.graph.search(
             graph_id=graph_id,
             query=query,
@@ -166,20 +166,20 @@ class ZepCloudClient(ZepClientAdapter):
         nodes = []
         edges = []
 
-        # 处理 nodes
+        # Process nodes
         if hasattr(search_result, 'nodes') and search_result.nodes:
             nodes = [self._convert_node(n) for n in search_result.nodes]
 
-        # 处理 edges
+        # Process edges
         if hasattr(search_result, 'edges') and search_result.edges:
             edges = [self._convert_edge(e) for e in search_result.edges]
 
         return SearchResult(nodes=nodes, edges=edges)
 
-    # ==================== 转换辅助方法 ====================
+    # ==================== Conversion helper methods ====================
 
     def _convert_node(self, node: Any) -> GraphNode:
-        """将 Zep Node 对象转换为 GraphNode"""
+        """Convert Zep Node object to GraphNode"""
         created_at = getattr(node, 'created_at', None)
         return GraphNode(
             uuid=getattr(node, 'uuid_', None) or getattr(node, 'uuid', ''),
@@ -191,14 +191,14 @@ class ZepCloudClient(ZepClientAdapter):
         )
 
     def _convert_edge(self, edge: Any) -> GraphEdge:
-        """将 Zep Edge 对象转换为 GraphEdge"""
-        # 处理时间字段
+        """Convert Zep Edge object to GraphEdge"""
+        # Process time fields
         created_at = getattr(edge, 'created_at', None)
         valid_at = getattr(edge, 'valid_at', None)
         invalid_at = getattr(edge, 'invalid_at', None)
         expired_at = getattr(edge, 'expired_at', None)
 
-        # 处理 episodes
+        # Process episodes
         episodes = getattr(edge, 'episodes', None) or getattr(edge, 'episode_ids', None)
         if episodes and not isinstance(episodes, list):
             episodes = [str(episodes)]

@@ -1,8 +1,8 @@
 """
-Zep 客户端适配器接口
+Zep client adapter interface
 
-定义统一的 Zep 客户端抽象接口，支持 cloud/graphiti 双实现切换。
-MVP 阶段目标：不依赖 Zep Cloud，跑通「建图 → 读实体 → 搜索 → 报告」核心链路。
+Defines a unified Zep client abstraction interface, supporting cloud/graphiti dual implementation switching.
+MVP goal: run the core pipeline of 'build graph -> read entities -> search -> report' without depending on Zep Cloud.
 """
 
 from abc import ABC, abstractmethod
@@ -11,12 +11,12 @@ from typing import Any, Dict, List, Optional
 
 
 # ============================================================
-# 数据结构定义
+# Data structure definitions
 # ============================================================
 
 @dataclass
 class GraphNode:
-    """图谱节点（对齐 zep-cloud Node 结构）"""
+    """Graph node (aligned with zep-cloud Node structure)"""
     uuid: str
     name: str
     labels: List[str]
@@ -27,7 +27,7 @@ class GraphNode:
 
 @dataclass
 class GraphEdge:
-    """图谱边（对齐 zep-cloud Edge 结构）"""
+    """Graph edge (aligned with zep-cloud Edge structure)"""
     uuid: str
     name: str
     fact: str
@@ -44,65 +44,65 @@ class GraphEdge:
 
 @dataclass
 class SearchResult:
-    """搜索结果"""
+    """Search result"""
     nodes: List[GraphNode]
     edges: List[GraphEdge]
 
 
 @dataclass
 class EpisodeStatus:
-    """Episode 处理状态"""
+    """Episode processing status"""
     uuid: str
     processed: bool
 
 
 # ============================================================
-# 适配器抽象接口
+# Adapter abstract interface
 # ============================================================
 
 class ZepClientAdapter(ABC):
     """
-    统一的 Zep 客户端接口
+    Unified Zep client interface
 
-    实现类：
-    - ZepCloudClient: 包装现有 zep-cloud SDK
-    - GraphitiClient: 本地 Graphiti + Neo4j 实现
+    Implementations:
+    - ZepCloudClient: Wraps existing zep-cloud SDK
+    - GraphitiClient: Local Graphiti + Neo4j implementation
 
-    MVP 范围：
-    - create_graph: 创建图谱
-    - set_ontology: 设置本体（Graphiti 可 no-op）
-    - add_episode: 添加单条 episode
-    - add_episode_batch: 批量添加
-    - search: 语义/混合搜索
-    - get_all_nodes: 获取图谱所有节点
-    - get_all_edges: 获取图谱所有边
-    - get_node: 获取单个节点
-    - get_node_edges: 获取节点相关的边
-    - delete_graph: 删除图谱
-    - wait_for_episode: 等待 episode 处理完成（Graphiti 同步处理，直接返回）
+    MVP scope:
+    - create_graph: Create graph
+    - set_ontology: Set ontology (Graphiti can no-op)
+    - add_episode: Add a single episode
+    - add_episode_batch: Batch add
+    - search: Semantic/hybrid search
+    - get_all_nodes: Get all nodes in a graph
+    - get_all_edges: Get all edges in a graph
+    - get_node: Get a single node
+    - get_node_edges: Get edges related to a node
+    - delete_graph: Delete graph
+    - wait_for_episode: Wait for episode processing to complete (Graphiti processes synchronously, returns directly)
     """
 
-    # ==================== Graph 操作 ====================
+    # ==================== Graph operations ====================
 
     @abstractmethod
     def create_graph(self, graph_id: str, name: str, description: str) -> None:
         """
-        创建知识图谱
+        Create knowledge graph
 
         Args:
-            graph_id: 图谱唯一标识
-            name: 图谱名称
-            description: 图谱描述
+            graph_id: Graph unique identifier
+            name: Graph name
+            description: Graph description
         """
         ...
 
     @abstractmethod
     def delete_graph(self, graph_id: str) -> None:
         """
-        删除图谱
+        Delete graph
 
         Args:
-            graph_id: 图谱ID
+            graph_id: Graph ID
         """
         ...
 
@@ -114,31 +114,31 @@ class ZepClientAdapter(ABC):
         edges: Optional[Dict[str, Any]] = None
     ) -> None:
         """
-        设置图谱本体（实体类型、边类型定义）
+        Set graph ontology (entity types, edge type definitions)
 
-        MVP 说明：Graphiti 实现可 no-op 或仅记录用于 prompt 提示。
+        MVP note: Graphiti implementation can no-op or just log for prompt hints.
 
         Args:
-            graph_ids: 图谱ID列表
-            entities: 实体类型定义 {type_name: EntityModelClass}
-            edges: 边类型定义 {edge_name: (EdgeModelClass, [source_targets])}
+            graph_ids: List of graph IDs
+            entities: Entity type definitions {type_name: EntityModelClass}
+            edges: Edge type definitions {edge_name: (EdgeModelClass, [source_targets])}
         """
         ...
 
-    # ==================== Episode 操作 ====================
+    # ==================== Episode operations ====================
 
     @abstractmethod
     def add_episode(self, graph_id: str, data: str, episode_type: str = "text") -> str:
         """
-        添加单条 episode 到图谱
+        Add a single episode to graph
 
         Args:
-            graph_id: 图谱ID
-            data: episode 内容
-            episode_type: 类型，默认 "text"
+            graph_id: Graph ID
+            data: Episode content
+            episode_type: Type, default "text"
 
         Returns:
-            episode UUID
+            Episode UUID
         """
         ...
 
@@ -149,43 +149,43 @@ class ZepClientAdapter(ABC):
         episodes: List[Dict[str, Any]]
     ) -> List[str]:
         """
-        批量添加 episode 到图谱
+        Batch add episodes to graph
 
         Args:
-            graph_id: 图谱ID
-            episodes: episode 列表，每项包含 {"data": str, "type": str}
+            graph_id: Graph ID
+            episodes: List of episodes, each containing {"data": str, "type": str}
 
         Returns:
-            episode UUID 列表
+            List of episode UUIDs
         """
         ...
 
     @abstractmethod
     def get_episode_status(self, episode_uuid: str) -> EpisodeStatus:
         """
-        获取 episode 处理状态
+        Get episode processing status
 
         Args:
-            episode_uuid: episode UUID
+            episode_uuid: Episode UUID
 
         Returns:
-            EpisodeStatus 包含 uuid 和 processed 状态
+            EpisodeStatus containing uuid and processed state
         """
         ...
 
     def wait_for_episode(self, episode_uuid: str, timeout: int = 300) -> bool:
         """
-        等待 episode 处理完成
+        Wait for episode processing to complete
 
-        默认实现：轮询 get_episode_status 直到 processed=True 或超时。
-        Graphiti 实现可覆写为直接返回 True（同步处理）。
+        Default implementation: poll get_episode_status until processed=True or timeout.
+        Graphiti implementation can override to return True directly (synchronous processing).
 
         Args:
-            episode_uuid: episode UUID
-            timeout: 超时秒数
+            episode_uuid: Episode UUID
+            timeout: Timeout in seconds
 
         Returns:
-            是否处理完成
+            Whether processing completed
         """
         import time
         start_time = time.time()
@@ -196,63 +196,63 @@ class ZepClientAdapter(ABC):
             time.sleep(2)
         return False
 
-    # ==================== Node 操作 ====================
+    # ==================== Node operations ====================
 
     @abstractmethod
     def get_all_nodes(self, graph_id: str) -> List[GraphNode]:
         """
-        获取图谱的所有节点
+        Get all nodes in a graph
 
         Args:
-            graph_id: 图谱ID
+            graph_id: Graph ID
 
         Returns:
-            节点列表
+            List of nodes
         """
         ...
 
     @abstractmethod
     def get_node(self, node_uuid: str) -> Optional[GraphNode]:
         """
-        获取单个节点详情
+        Get single node details
 
         Args:
-            node_uuid: 节点 UUID
+            node_uuid: Node UUID
 
         Returns:
-            节点对象，不存在时返回 None
+            Node object, or None if not found
         """
         ...
 
     @abstractmethod
     def get_node_edges(self, node_uuid: str) -> List[GraphEdge]:
         """
-        获取节点的所有相关边
+        Get all edges related to a node
 
         Args:
-            node_uuid: 节点 UUID
+            node_uuid: Node UUID
 
         Returns:
-            边列表（包括以该节点为 source 或 target 的边）
+            List of edges (including edges where this node is source or target)
         """
         ...
 
-    # ==================== Edge 操作 ====================
+    # ==================== Edge operations ====================
 
     @abstractmethod
     def get_all_edges(self, graph_id: str) -> List[GraphEdge]:
         """
-        获取图谱的所有边
+        Get all edges in a graph
 
         Args:
-            graph_id: 图谱ID
+            graph_id: Graph ID
 
         Returns:
-            边列表
+            List of edges
         """
         ...
 
-    # ==================== Search 操作 ====================
+    # ==================== Search operations ====================
 
     @abstractmethod
     def search(
@@ -264,16 +264,16 @@ class ZepClientAdapter(ABC):
         reranker: str = "cross_encoder"
     ) -> SearchResult:
         """
-        图谱混合搜索
+        Graph hybrid search
 
         Args:
-            graph_id: 图谱ID
-            query: 搜索查询
-            limit: 返回结果数量限制
-            scope: 搜索范围 - "edges" | "nodes" | "both"
-            reranker: 重排序策略 - "cross_encoder" | "rrf" | "none"
+            graph_id: Graph ID
+            query: Search query
+            limit: Maximum number of results to return
+            scope: Search scope - "edges" | "nodes" | "both"
+            reranker: Reranking strategy - "cross_encoder" | "rrf" | "none"
 
         Returns:
-            SearchResult 包含匹配的 nodes 和 edges
+            SearchResult containing matching nodes and edges
         """
         ...

@@ -1,8 +1,8 @@
 """
-Zep 客户端工厂
+Zep client factory
 
-根据配置自动选择 Zep Cloud 或 Graphiti 本地实现。
-通过 ZEP_BACKEND 环境变量控制后端选择。
+Automatically selects Zep Cloud or Graphiti local implementation based on configuration.
+Backend selection is controlled via the ZEP_BACKEND environment variable.
 """
 
 import logging
@@ -23,23 +23,23 @@ def create_zep_client(
     neo4j_password: Optional[str] = None,
 ) -> ZepClientAdapter:
     """
-    创建 Zep 客户端实例
+    Create Zep client instance
 
-    根据 backend 参数或 ZEP_BACKEND 环境变量选择实现：
-    - 'cloud': 使用 Zep Cloud (需要 ZEP_API_KEY)
-    - 'graphiti': 使用 Graphiti + Neo4j 本地部署
+    Select implementation based on backend parameter or ZEP_BACKEND env var:
+    - 'cloud': Use Zep Cloud (requires ZEP_API_KEY)
+    - 'graphiti': Use Graphiti + Neo4j local deployment
 
     Args:
-        backend: 后端选择 ('cloud' | 'graphiti')，默认从环境变量读取
-        api_key: Zep Cloud API Key（仅 cloud 模式需要）
-        neo4j_uri: Neo4j URI（仅 graphiti 模式需要）
-        neo4j_user: Neo4j 用户名
-        neo4j_password: Neo4j 密码
+        backend: Backend selection ('cloud' | 'graphiti'), defaults to env var
+        api_key: Zep Cloud API Key (only needed for cloud mode)
+        neo4j_uri: Neo4j URI (only needed for graphiti mode)
+        neo4j_user: Neo4j username
+        neo4j_password: Neo4j password
 
     Returns:
-        ZepClientAdapter 实例
+        ZepClientAdapter instance
     """
-    # 确定后端类型
+    # Determine backend type
     backend = backend or Config.ZEP_BACKEND
 
     if backend == 'graphiti':
@@ -49,16 +49,16 @@ def create_zep_client(
 
 
 def _create_cloud_client(api_key: Optional[str] = None) -> ZepClientAdapter:
-    """创建 Zep Cloud 客户端"""
+    """Create Zep Cloud client"""
     from .zep_cloud_impl import ZepCloudClient
 
     key = api_key or Config.ZEP_API_KEY
     if not key:
         raise ValueError(
-            "ZEP_API_KEY 未配置。使用 Zep Cloud 需要设置 ZEP_API_KEY 环境变量。"
+            "ZEP_API_KEY not configured. Using Zep Cloud requires setting the ZEP_API_KEY environment variable."
         )
 
-    logger.info("创建 Zep Cloud 客户端")
+    logger.info("Creating Zep Cloud client")
     return ZepCloudClient(api_key=key)
 
 
@@ -67,7 +67,7 @@ def _create_graphiti_client(
     neo4j_user: Optional[str] = None,
     neo4j_password: Optional[str] = None,
 ) -> ZepClientAdapter:
-    """创建 Graphiti 本地客户端"""
+    """Create Graphiti local client"""
     from .zep_graphiti_impl import GraphitiClient
 
     uri = neo4j_uri or Config.NEO4J_URI
@@ -76,10 +76,10 @@ def _create_graphiti_client(
 
     if not all([uri, user, password]):
         raise ValueError(
-            "Neo4j 配置不完整。使用 Graphiti 需要设置 NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD。"
+            "Neo4j configuration incomplete. Using Graphiti requires setting NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD."
         )
 
-    logger.info(f"创建 Graphiti 本地客户端: {uri}")
+    logger.info(f"Creating Graphiti local client: {uri}")
     return GraphitiClient(
         neo4j_uri=uri,
         neo4j_user=user,
@@ -88,7 +88,7 @@ def _create_graphiti_client(
 
 
 # ============================================================
-# 单例缓存（可选，用于需要共享客户端实例的场景）
+# Singleton cache (optional, for scenarios requiring shared client instances)
 # ============================================================
 
 import threading
@@ -99,19 +99,19 @@ _client_lock = threading.Lock()
 
 def get_zep_client() -> ZepClientAdapter:
     """
-    获取全局共享的 Zep 客户端实例（线程安全）
+    Get the globally shared Zep client instance (thread-safe)
 
-    首次调用时创建实例，后续调用返回相同实例。
-    适用于需要复用连接的场景（如 Neo4j 连接池）。
+    Creates the instance on first call, returns the same instance on subsequent calls.
+    Suitable for scenarios requiring connection reuse (e.g., Neo4j connection pool).
 
-    使用 double-checked locking 确保线程安全且性能最优。
+    Uses double-checked locking to ensure thread safety with optimal performance.
 
-    注意：如果需要独立实例，请直接调用 create_zep_client()。
+    Note: If you need an independent instance, call create_zep_client() directly.
     """
     global _client_instance
     if _client_instance is None:
         with _client_lock:
-            # Double-check: 防止多线程同时通过第一次检查
+            # Double-check: prevent multiple threads from passing the first check simultaneously
             if _client_instance is None:
                 _client_instance = create_zep_client()
     return _client_instance
@@ -119,18 +119,18 @@ def get_zep_client() -> ZepClientAdapter:
 
 def reset_zep_client():
     """
-    重置全局客户端实例（线程安全）
+    Reset global client instance (thread-safe)
 
-    用于测试或需要重新初始化的场景。
+    Used for testing or scenarios requiring re-initialization.
     """
     global _client_instance
     with _client_lock:
         if _client_instance is not None:
-            # 尝试关闭连接
+            # Attempt to close connection
             if hasattr(_client_instance, 'close'):
                 try:
                     _client_instance.close()
                 except Exception:
                     pass
             _client_instance = None
-            logger.info("全局 Zep 客户端实例已重置")
+            logger.info("Global Zep client instance has been reset")

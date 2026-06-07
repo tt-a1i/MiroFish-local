@@ -1,6 +1,6 @@
 """
-LLM客户端封装
-统一使用OpenAI格式调用
+LLM client wrapper
+Unified calls using OpenAI format
 """
 
 import json
@@ -16,7 +16,7 @@ _THINK_PATTERN = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
 
 
 class LLMClient:
-    """LLM客户端"""
+    """LLM client"""
     
     def __init__(
         self,
@@ -29,7 +29,7 @@ class LLMClient:
         self.model = model or Config.LLM_MODEL_NAME
         
         if not self.api_key:
-            raise ValueError("LLM_API_KEY 未配置")
+            raise ValueError("LLM_API_KEY is not configured")
         
         self.client = OpenAI(
             api_key=self.api_key,
@@ -44,16 +44,16 @@ class LLMClient:
         response_format: Optional[Dict] = None
     ) -> str:
         """
-        发送聊天请求
-        
+        Send a chat request
+
         Args:
-            messages: 消息列表
-            temperature: 温度参数
-            max_tokens: 最大token数
-            response_format: 响应格式（如JSON模式）
-            
+            messages: Message list
+            temperature: Temperature parameter
+            max_tokens: Maximum token count
+            response_format: Response format (e.g., JSON mode)
+
         Returns:
-            模型响应文本
+            Model response text
         """
         kwargs = {
             "model": self.model,
@@ -78,15 +78,15 @@ class LLMClient:
         max_tokens: int = 16384
     ) -> Dict[str, Any]:
         """
-        发送聊天请求并返回JSON
-        
+        Send a chat request and return JSON
+
         Args:
-            messages: 消息列表
-            temperature: 温度参数
-            max_tokens: 最大token数
-            
+            messages: Message list
+            temperature: Temperature parameter
+            max_tokens: Maximum token count
+
         Returns:
-            解析后的JSON对象
+            Parsed JSON object
         """
         response = self.chat(
             messages=messages,
@@ -103,4 +103,4 @@ class LLMClient:
         try:
             return json.loads(cleaned_response)
         except json.JSONDecodeError:
-            raise ValueError(f"LLM返回的JSON格式无效: {cleaned_response}")
+            raise ValueError(f"LLM returned invalid JSON format: {cleaned_response}")
