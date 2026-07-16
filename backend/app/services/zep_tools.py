@@ -14,14 +14,19 @@ Zep检索工具服务
 
 import time
 import json
+import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, field
 
 from ..config import Config
 from ..utils.logger import get_logger
 from ..utils.llm_client import LLMClient
+from ..utils.llm_routing import clamp_concurrency
 from .zep_factory import get_zep_client
 from .zep_adapter import ZepClientAdapter
+from .graph_builder import GraphBuilderService
+from .location_entity_filter import filter_location_entities
 
 logger = get_logger('mirofish.zep_tools')
 
@@ -402,19 +407,25 @@ class ZepToolsService:
     MAX_RETRIES = 3
     RETRY_DELAY = 2.0
     
-    def __init__(self, api_key: Optional[str] = None, llm_client: Optional[LLMClient] = None):
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        llm_client: Optional[LLMClient] = None,
+        backend: Optional[str] = None,
+    ):
         """初始化Zep工具服务（使用单例）"""
         # 使用单例获取适配器（避免重复初始化）
-        self.client: ZepClientAdapter = get_zep_client()
+        self.client: ZepClientAdapter = get_zep_client(backend=backend)
         # LLM客户端用于InsightForge生成子问题
         self._llm_client = llm_client
+        self.tool_concurrency = clamp_concurrency(Config.REPORT_TOOL_CONCURRENCY, 3, maximum=8)
         logger.info("ZepToolsService 初始化完成")
     
     @property
     def llm(self) -> LLMClient:
         """延迟初始化LLM客户端"""
         if self._llm_client is None:
-            self._llm_client = LLMClient()
+            self._llm_client = LLMClient(prefer_boost=True)
         return self._llm_client
     
     def _call_with_retry(self, func, operation_name: str, max_retries: int = None):
@@ -642,6 +653,8 @@ class ZepToolsService:
             func=lambda: self.client.get_all_nodes(graph_id),
             operation_name=f"获取节点(graph={graph_id})"
         )
+        nodes, _ = GraphBuilderService._coalesce_duplicate_entities(nodes, [])
+        nodes, _ = filter_location_entities(nodes, [])
 
         result = []
         for node in nodes:
@@ -673,6 +686,12 @@ class ZepToolsService:
             func=lambda: self.client.get_all_edges(graph_id),
             operation_name=f"获取边(graph={graph_id})"
         )
+        nodes = self._call_with_retry(
+            func=lambda: self.client.get_all_nodes(graph_id),
+            operation_name=f"获取节点(graph={graph_id})"
+        )
+        nodes, edges = GraphBuilderService._coalesce_duplicate_entities(nodes, edges)
+        nodes, edges = filter_location_entities(nodes, edges)
 
         result = []
         for edge in edges:
@@ -696,11 +715,12 @@ class ZepToolsService:
         logger.info(f"获取到 {len(result)} 条边")
         return result
     
-    def get_node_detail(self, node_uuid: str) -> Optional[NodeInfo]:
+    def get_node_detail(self, graph_id: str, node_uuid: str) -> Optional[NodeInfo]:
         """
         获取单个节点的详细信息
 
         Args:
+            graph_id: 图谱ID
             node_uuid: 节点UUID
 
         Returns:
@@ -710,7 +730,7 @@ class ZepToolsService:
 
         try:
             node = self._call_with_retry(
-                func=lambda: self.client.get_node(node_uuid),
+                func=lambda: self.client.get_node(graph_id, node_uuid),
                 operation_name=f"获取节点详情(uuid={node_uuid[:8]}...)"
             )
 
@@ -976,32 +996,40 @@ class ZepToolsService:
         all_edges = []
         seen_facts = set()
         
-        for sub_query in sub_queries:
-            search_result = self.search_graph(
+        search_jobs = [(sub_query, 15) for sub_query in sub_queries]
+        search_jobs.append((query, 20))
+        search_results_by_index: Dict[int, SearchResult] = {}
+
+        def run_search(search_query: str, limit: int) -> SearchResult:
+            return self.search_graph(
                 graph_id=graph_id,
-                query=sub_query,
-                limit=15,
-                scope="edges"
+                query=search_query,
+                limit=limit,
+                scope="edges",
             )
-            
+
+        max_workers = min(self.tool_concurrency, len(search_jobs))
+        if max_workers <= 1:
+            for index, (search_query, limit) in enumerate(search_jobs):
+                search_results_by_index[index] = run_search(search_query, limit)
+        else:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_to_index = {
+                    executor.submit(run_search, search_query, limit): index
+                    for index, (search_query, limit) in enumerate(search_jobs)
+                }
+                for future in as_completed(future_to_index):
+                    search_results_by_index[future_to_index[future]] = future.result()
+
+        for index in range(len(search_jobs)):
+            search_result = search_results_by_index.get(index)
+            if not search_result:
+                continue
             for fact in search_result.facts:
                 if fact not in seen_facts:
                     all_facts.append(fact)
                     seen_facts.add(fact)
-            
             all_edges.extend(search_result.edges)
-        
-        # 对原始问题也进行搜索
-        main_search = self.search_graph(
-            graph_id=graph_id,
-            query=query,
-            limit=20,
-            scope="edges"
-        )
-        for fact in main_search.facts:
-            if fact not in seen_facts:
-                all_facts.append(fact)
-                seen_facts.add(fact)
         
         result.semantic_facts = all_facts
         result.total_facts = len(all_facts)
@@ -1021,32 +1049,48 @@ class ZepToolsService:
         entity_insights = []
         node_map = {}  # 用于后续关系链构建
         
-        for uuid in list(entity_uuids):  # 处理所有实体，不截断
-            if not uuid:
-                continue
+        entity_uuid_list = [uuid for uuid in entity_uuids if uuid]
+
+        def fetch_node(uuid: str) -> Optional[NodeInfo]:
             try:
-                # 单独获取每个相关节点的信息
-                node = self.get_node_detail(uuid)
+                return self.get_node_detail(graph_id, uuid)
+            except Exception as exc:
+                logger.debug(f"获取节点 {uuid} 失败: {exc}")
+                return None
+
+        node_results_by_uuid: Dict[str, NodeInfo] = {}
+        max_node_workers = min(self.tool_concurrency, len(entity_uuid_list))
+        if max_node_workers <= 1:
+            for uuid in entity_uuid_list:
+                node = fetch_node(uuid)
                 if node:
-                    node_map[uuid] = node
-                    entity_type = next((l for l in node.labels if l not in ["Entity", "Node"]), "实体")
-                    
-                    # 获取该实体相关的所有事实（不截断）
-                    related_facts = [
-                        f for f in all_facts 
-                        if node.name.lower() in f.lower()
-                    ]
-                    
-                    entity_insights.append({
-                        "uuid": node.uuid,
-                        "name": node.name,
-                        "type": entity_type,
-                        "summary": node.summary,
-                        "related_facts": related_facts  # 完整输出，不截断
-                    })
-            except Exception as e:
-                logger.debug(f"获取节点 {uuid} 失败: {e}")
+                    node_results_by_uuid[uuid] = node
+        else:
+            with ThreadPoolExecutor(max_workers=max_node_workers) as executor:
+                future_to_uuid = {executor.submit(fetch_node, uuid): uuid for uuid in entity_uuid_list}
+                for future in as_completed(future_to_uuid):
+                    uuid = future_to_uuid[future]
+                    node = future.result()
+                    if node:
+                        node_results_by_uuid[uuid] = node
+
+        for uuid in entity_uuid_list:
+            node = node_results_by_uuid.get(uuid)
+            if not node:
                 continue
+            node_map[uuid] = node
+            entity_type = next((l for l in node.labels if l not in ["Entity", "Node"]), "实体")
+            related_facts = [
+                f for f in all_facts
+                if node.name and node.name.lower() in f.lower()
+            ]
+            entity_insights.append({
+                "uuid": node.uuid,
+                "name": node.name,
+                "type": entity_type,
+                "summary": node.summary,
+                "related_facts": related_facts
+            })
         
         result.entity_insights = entity_insights
         result.total_entities = len(entity_insights)
@@ -1335,17 +1379,16 @@ class ZepToolsService:
         INTERVIEW_PROMPT_PREFIX = "结合你的人设、所有的过往记忆与行动，不调用任何工具直接用文本回复我："
         optimized_prompt = f"{INTERVIEW_PROMPT_PREFIX}{combined_prompt}"
         
-        # Step 4: 调用真实的采访API（不指定platform，默认双平台同时采访）
+        # Step 4: 优先调用真实的采访API；IPC不可用时降级为基于人设的问卷回答
+        interviews_request = [
+            {
+                "agent_id": agent_idx,
+                "prompt": optimized_prompt
+            }
+            for agent_idx in selected_indices
+        ]
+
         try:
-            # 构建批量采访列表（不指定platform，双平台采访）
-            interviews_request = []
-            for agent_idx in selected_indices:
-                interviews_request.append({
-                    "agent_id": agent_idx,
-                    "prompt": optimized_prompt  # 使用优化后的prompt
-                    # 不指定platform，API会在twitter和reddit两个平台都采访
-                })
-            
             logger.info(f"调用批量采访API（双平台）: {len(interviews_request)} 个Agent")
             
             # 调用 SimulationRunner 的批量采访方法（不传platform，双平台采访）
@@ -1362,70 +1405,63 @@ class ZepToolsService:
             if not api_result.get("success", False):
                 error_msg = api_result.get("error", "未知错误")
                 logger.warning(f"采访API返回失败: {error_msg}")
-                result.summary = f"采访API调用失败：{error_msg}。请检查OASIS模拟环境状态。"
-                return result
-            
-            # Step 5: 解析API返回结果，构建AgentInterview对象
-            # 双平台模式返回格式: {"twitter_0": {...}, "reddit_0": {...}, "twitter_1": {...}, ...}
-            api_data = api_result.get("result", {})
-            results_dict = api_data.get("results", {}) if isinstance(api_data, dict) else {}
-            
-            for i, agent_idx in enumerate(selected_indices):
-                agent = selected_agents[i]
-                agent_name = agent.get("realname", agent.get("username", f"Agent_{agent_idx}"))
-                agent_role = agent.get("profession", "未知")
-                agent_bio = agent.get("bio", "")
-                
-                # 获取该Agent在两个平台的采访结果
-                twitter_result = results_dict.get(f"twitter_{agent_idx}", {})
-                reddit_result = results_dict.get(f"reddit_{agent_idx}", {})
-                
-                twitter_response = twitter_result.get("response", "")
-                reddit_response = reddit_result.get("response", "")
-                
-                # 合并两个平台的回答
-                response_parts = []
-                if twitter_response:
-                    response_parts.append(f"【Twitter平台回答】\n{twitter_response}")
-                if reddit_response:
-                    response_parts.append(f"【Reddit平台回答】\n{reddit_response}")
-                
-                if response_parts:
-                    response_text = "\n\n".join(response_parts)
-                else:
-                    response_text = "[无回复]"
-                
-                # 提取关键引言（从两个平台的回答中）
-                import re
-                combined_responses = f"{twitter_response} {reddit_response}"
-                key_quotes = re.findall(r'[""「」『』]([^""「」『』]{10,100})[""「」『』]', combined_responses)
-                if not key_quotes:
-                    sentences = combined_responses.split('。')
-                    key_quotes = [s.strip() + '。' for s in sentences if len(s.strip()) > 20][:3]
-                
-                interview = AgentInterview(
-                    agent_name=agent_name,
-                    agent_role=agent_role,
-                    agent_bio=agent_bio[:1000],  # 扩大bio长度限制
-                    question=combined_prompt,
-                    response=response_text,
-                    key_quotes=key_quotes[:5]
+                api_result = self._fallback_interview_agents_from_profiles(
+                    simulation_id=simulation_id,
+                    interviews_request=interviews_request,
+                    fallback_reason=error_msg,
                 )
-                result.interviews.append(interview)
+
+            self._append_api_interviews_to_result(
+                result=result,
+                api_result=api_result,
+                selected_agents=selected_agents,
+                selected_indices=selected_indices,
+                combined_prompt=combined_prompt,
+            )
             
-            result.interviewed_count = len(result.interviews)
-            
-        except ValueError as e:
-            # 模拟环境未运行
-            logger.warning(f"采访API调用失败（环境未运行？）: {e}")
-            result.summary = f"采访失败：{str(e)}。模拟环境可能已关闭，请确保OASIS环境正在运行。"
-            return result
+        except (ValueError, TimeoutError) as e:
+            logger.warning(f"采访API不可用，切换到profile问卷降级: {e}")
+            try:
+                api_result = self._fallback_interview_agents_from_profiles(
+                    simulation_id=simulation_id,
+                    interviews_request=interviews_request,
+                    fallback_reason=str(e),
+                )
+                self._append_api_interviews_to_result(
+                    result=result,
+                    api_result=api_result,
+                    selected_agents=selected_agents,
+                    selected_indices=selected_indices,
+                    combined_prompt=combined_prompt,
+                )
+            except Exception as fallback_e:
+                logger.error(f"profile问卷降级失败: {fallback_e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                result.summary = f"采访失败：{str(e)}；profile问卷降级也失败：{fallback_e}"
+                return result
         except Exception as e:
-            logger.error(f"采访API调用异常: {e}")
+            logger.error(f"采访API调用异常，切换到profile问卷降级: {e}")
             import traceback
             logger.error(traceback.format_exc())
-            result.summary = f"采访过程发生错误：{str(e)}"
-            return result
+            try:
+                api_result = self._fallback_interview_agents_from_profiles(
+                    simulation_id=simulation_id,
+                    interviews_request=interviews_request,
+                    fallback_reason=str(e),
+                )
+                self._append_api_interviews_to_result(
+                    result=result,
+                    api_result=api_result,
+                    selected_agents=selected_agents,
+                    selected_indices=selected_indices,
+                    combined_prompt=combined_prompt,
+                )
+            except Exception as fallback_e:
+                logger.error(f"profile问卷降级失败: {fallback_e}")
+                logger.error(traceback.format_exc())
+                result.summary = f"采访过程发生错误：{str(e)}；profile问卷降级也失败：{fallback_e}"
+                return result
         
         # Step 6: 生成采访摘要
         if result.interviews:
@@ -1436,6 +1472,84 @@ class ZepToolsService:
         
         logger.info(f"InterviewAgents完成: 采访了 {result.interviewed_count} 个Agent（双平台）")
         return result
+
+    def _fallback_interview_agents_from_profiles(
+        self,
+        simulation_id: str,
+        interviews_request: List[Dict[str, Any]],
+        fallback_reason: str,
+    ) -> Dict[str, Any]:
+        """当OASIS IPC采访不可用时，复用Step5的人设问卷能力生成可用回答。"""
+        from .agent_dialogue_service import AgentDialogueService
+
+        logger.info(
+            "使用profile问卷降级生成采访结果: simulation_id=%s, count=%s, reason=%s",
+            simulation_id,
+            len(interviews_request),
+            fallback_reason,
+        )
+        return AgentDialogueService(llm_client=self.llm).interview_agents_from_profiles(
+            simulation_id=simulation_id,
+            interviews=interviews_request,
+            platform="reddit",
+            fallback_reason=fallback_reason,
+        )
+
+    def _append_api_interviews_to_result(
+        self,
+        result: InterviewResult,
+        api_result: Dict[str, Any],
+        selected_agents: List[Dict[str, Any]],
+        selected_indices: List[int],
+        combined_prompt: str,
+    ) -> None:
+        """把真实IPC采访或profile降级采访的API结果转换为报告工具内部结构。"""
+        api_data = api_result.get("result", {}) if isinstance(api_result, dict) else {}
+        results_dict = api_data.get("results", {}) if isinstance(api_data, dict) else {}
+        result_source = api_data.get("source") if isinstance(api_data, dict) else None
+
+        for i, agent_idx in enumerate(selected_indices):
+            agent = selected_agents[i]
+            agent_name = agent.get("realname", agent.get("username", f"Agent_{agent_idx}"))
+            agent_role = agent.get("profession", "未知")
+            agent_bio = agent.get("bio", "")
+
+            twitter_result = results_dict.get(f"twitter_{agent_idx}", {})
+            reddit_result = results_dict.get(f"reddit_{agent_idx}", {})
+
+            twitter_response = twitter_result.get("response", "")
+            reddit_response = reddit_result.get("response", "")
+
+            response_parts = []
+            if twitter_response:
+                response_parts.append(f"【Twitter平台回答】\n{twitter_response}")
+            if reddit_response:
+                response_parts.append(f"【Reddit平台回答】\n{reddit_response}")
+
+            if response_parts:
+                response_text = "\n\n".join(response_parts)
+                if result_source == "profile_llm":
+                    response_text = f"【profile问卷降级回答】\n{response_text}"
+            else:
+                response_text = "[无回复]"
+
+            combined_responses = f"{twitter_response} {reddit_response}"
+            key_quotes = re.findall(r'[""「」『』]([^""「」『』]{10,100})[""「」『』]', combined_responses)
+            if not key_quotes:
+                sentences = combined_responses.split('。')
+                key_quotes = [s.strip() + '。' for s in sentences if len(s.strip()) > 20][:3]
+
+            interview = AgentInterview(
+                agent_name=agent_name,
+                agent_role=agent_role,
+                agent_bio=agent_bio[:1000],
+                question=combined_prompt,
+                response=response_text,
+                key_quotes=key_quotes[:5]
+            )
+            result.interviews.append(interview)
+
+        result.interviewed_count = len(result.interviews)
     
     def _load_agent_profiles(self, simulation_id: str) -> List[Dict[str, Any]]:
         """加载模拟的Agent人设文件"""

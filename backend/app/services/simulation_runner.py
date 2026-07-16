@@ -3,6 +3,7 @@ OASIS模拟运行器
 在后台运行模拟并记录每个Agent的动作，支持实时状态监控
 """
 
+import hashlib
 import os
 import sys
 import json
@@ -21,6 +22,7 @@ from queue import Queue
 from ..config import Config
 from ..utils.logger import get_logger
 from .zep_graph_memory_updater import ZepGraphMemoryManager
+from .zep_factory import get_zep_client
 from .simulation_ipc import SimulationIPCClient, CommandType, IPCResponse
 
 logger = get_logger('mirofish.simulation_runner')
@@ -30,6 +32,8 @@ _cleanup_registered = False
 
 # 平台检测
 IS_WINDOWS = sys.platform == 'win32'
+SIMULATION_REQUIRED_MODULES = ("camel", "oasis", "dotenv")
+SIMULATION_ENV_SETUP_HINT = "cd backend && ./scripts/setup_simulation_env.sh"
 
 
 def _get_simulation_python() -> str:
@@ -60,6 +64,206 @@ def _get_simulation_python() -> str:
     # 3. 回退到当前解释器（可能会因依赖冲突失败）
     logger.warning("未找到独立模拟环境，使用当前 Python（可能存在依赖冲突）")
     return sys.executable
+
+
+# 环境探针缓存（文件形式，跨请求持久化，避免 Docker 环境下重复导入 OASIS 耗时过长）
+_PROBE_CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".cache")
+_PROBE_CACHE_TTL_SECONDS = 3600  # 缓存 1 小时
+
+
+def _get_probe_cache_path(sim_python: str) -> str:
+    """生成基于 Python 路径的缓存文件路径。"""
+    # 用 Python 路径的 hash 作为文件名，避免路径中的特殊字符问题
+    key = hashlib.md5(sim_python.encode()).hexdigest()[:16]
+    return os.path.join(_PROBE_CACHE_DIR, f"env_probe_{key}.json")
+
+
+def _load_probe_cache(sim_python: str) -> Optional[Dict[str, Any]]:
+    """加载缓存的环境探针结果（仅在 TTL 内有效）。"""
+    cache_path = _get_probe_cache_path(sim_python)
+    if not os.path.exists(cache_path):
+        return None
+    try:
+        with open(cache_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        age = time.time() - data.get("timestamp", 0)
+        if age < _PROBE_CACHE_TTL_SECONDS and data.get("ok"):
+            logger.info(f"使用缓存的环境探针结果 (age={age:.0f}s): python={sim_python}")
+            return data
+        # 缓存过期或上次检测失败，删除旧缓存
+        if age >= _PROBE_CACHE_TTL_SECONDS:
+            logger.info(f"环境探针缓存已过期 (age={age:.0f}s)，重新探测")
+        try:
+            os.remove(cache_path)
+        except OSError:
+            pass
+    except (json.JSONDecodeError, OSError, KeyError) as e:
+        logger.warning(f"读取环境探针缓存失败: {e}")
+        try:
+            os.remove(cache_path)
+        except OSError:
+            pass
+    return None
+
+
+def _save_probe_cache(sim_python: str, result: Dict[str, Any]):
+    """保存环境探针结果到缓存文件。"""
+    os.makedirs(_PROBE_CACHE_DIR, exist_ok=True)
+    cache_path = _get_probe_cache_path(sim_python)
+    data = {**result, "timestamp": time.time()}
+    try:
+        with open(cache_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except OSError as e:
+        logger.warning(f"保存环境探针缓存失败: {e}")
+
+
+def _probe_simulation_environment(
+    python_executable: Optional[str] = None,
+    use_cache: bool = True,
+) -> Dict[str, Any]:
+    """
+    检查模拟解释器是否具备运行 OASIS 所需依赖。
+
+    返回结构化结果，便于 API 层和日志层复用。
+
+    Args:
+        python_executable: 模拟环境 Python 路径（默认自动探测）
+        use_cache: 是否使用缓存结果（缓存有效期 1 小时）
+
+    注意：在 Docker 等资源受限环境中，camel/oasis 等大型包的导入可能耗时
+    较长（可达 30-60 秒），因此：
+    1. 首次探测成功后缓存 1 小时
+    2. 探测子进程超时设置为 120 秒（适应慢速环境）
+    """
+    sim_python = python_executable or _get_simulation_python()
+
+    if not os.path.isfile(sim_python):
+        return {
+            "ok": False,
+            "python": sim_python,
+            "missing_modules": list(SIMULATION_REQUIRED_MODULES),
+            "error": f"模拟解释器不存在: {sim_python}",
+        }
+
+    # 尝试使用缓存（跳过重复的、耗时的导入探测）
+    if use_cache:
+        cached = _load_probe_cache(sim_python)
+        if cached:
+            return cached
+
+    probe_code = """
+import importlib
+import json
+import sys
+
+required_modules = ["camel", "oasis", "dotenv"]
+missing = []
+failures = {}
+
+for module_name in required_modules:
+    try:
+        importlib.import_module(module_name)
+    except ModuleNotFoundError as exc:
+        missing_name = exc.name or module_name
+        missing.append(missing_name)
+        failures[module_name] = f"ModuleNotFoundError: No module named '{missing_name}'"
+    except Exception as exc:
+        failures[module_name] = f"{type(exc).__name__}: {exc}"
+
+print(json.dumps({
+    "missing": missing,
+    "failures": failures,
+}, ensure_ascii=False))
+
+sys.exit(0 if not missing and not failures else 1)
+""".strip()
+
+    # 在 Docker 等慢速环境中导入可能超过 30 秒，设置更宽松的超时
+    _PROBE_TIMEOUT_SECONDS = int(os.environ.get('SIMULATION_PROBE_TIMEOUT', '120'))
+
+    logger.info(f"开始环境探针探测 (timeout={_PROBE_TIMEOUT_SECONDS}s): python={sim_python}")
+    try:
+        result = subprocess.run(
+            [sim_python, "-c", probe_code],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=_PROBE_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as e:
+        error_msg = (
+            f"环境探针子进程超时 ({_PROBE_TIMEOUT_SECONDS}秒)，"
+            f"可能是 Docker 环境资源不足或 OASIS 包导入耗时过长"
+        )
+        logger.warning(error_msg)
+        probe_result = {
+            "ok": False,
+            "python": sim_python,
+            "missing_modules": list(SIMULATION_REQUIRED_MODULES),
+            "error": error_msg,
+        }
+        _save_probe_cache(sim_python, probe_result)
+        return probe_result
+    except Exception as e:
+        error_msg = f"执行模拟环境预检失败: {e}"
+        logger.warning(error_msg)
+        probe_result = {
+            "ok": False,
+            "python": sim_python,
+            "missing_modules": list(SIMULATION_REQUIRED_MODULES),
+            "error": error_msg,
+        }
+        # 执行失败不缓存（可能是临时性错误）
+        return probe_result
+
+    payload: Dict[str, Any] = {}
+    stdout = (result.stdout or "").strip()
+    stderr = (result.stderr or "").strip()
+
+    if stdout:
+        try:
+            payload = json.loads(stdout.splitlines()[-1])
+        except json.JSONDecodeError:
+            payload = {}
+
+    missing_modules = payload.get("missing") or []
+    failures = payload.get("failures") or {}
+    error_text = stderr or stdout or str(failures) or f"模拟环境预检失败，退出码: {result.returncode}"
+
+    probe_result = {
+        "ok": result.returncode == 0 and not missing_modules and not failures,
+        "python": sim_python,
+        "missing_modules": missing_modules,
+        "failures": failures,
+        "error": error_text,
+    }
+
+    # 缓存结果（无论成功与否，避免短时间内重复探测）
+    if probe_result["ok"]:
+        _save_probe_cache(sim_python, probe_result)
+        logger.info(f"环境探针通过 (已缓存): python={sim_python}")
+    else:
+        logger.warning(f"环境探针失败: {error_text}")
+
+    return probe_result
+
+
+def _ensure_simulation_environment_ready() -> Dict[str, Any]:
+    """在启动模拟前强制校验独立环境依赖。"""
+    status = _probe_simulation_environment()
+    if status.get("ok"):
+        return status
+
+    missing_modules = status.get("missing_modules") or list(SIMULATION_REQUIRED_MODULES)
+    missing_display = ", ".join(missing_modules)
+    raise ValueError(
+        "模拟环境未就绪: "
+        f"python={status.get('python')}, 缺少或无法导入依赖 [{missing_display}]。"
+        " 模拟脚本运行依赖独立环境中的完整依赖集。"
+        f"请先执行 `{SIMULATION_ENV_SETUP_HINT}`。"
+        f" 详情: {status.get('error')}"
+    )
 
 
 class RunnerStatus(str, Enum):
@@ -337,6 +541,54 @@ class SimulationRunner:
             json.dump(data, f, ensure_ascii=False, indent=2)
         
         cls._run_states[state.simulation_id] = state
+
+    @classmethod
+    def _capture_graph_memory_baseline(
+        cls,
+        simulation_id: str,
+        graph_id: str,
+        backend: Optional[str] = None,
+    ) -> bool:
+        """在 Step 3 启动前保存当前图谱节点，用于区分推演新增节点。"""
+        try:
+            client = get_zep_client(backend=backend)
+            node_uuids = sorted({
+                str(node.uuid)
+                for node in client.get_all_nodes(graph_id)
+                if getattr(node, "uuid", None)
+            })
+            sim_dir = os.path.join(cls.RUN_STATE_DIR, simulation_id)
+            os.makedirs(sim_dir, exist_ok=True)
+            baseline_path = os.path.join(sim_dir, "graph_memory_baseline.json")
+            temporary_path = f"{baseline_path}.tmp"
+            with open(temporary_path, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "graph_id": graph_id,
+                        "captured_at": datetime.now().astimezone().isoformat(),
+                        "node_uuids": node_uuids,
+                    },
+                    f,
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            os.replace(temporary_path, baseline_path)
+            logger.info(
+                "已保存推演前图谱节点基线: simulation_id=%s, graph_id=%s, node_count=%s",
+                simulation_id,
+                graph_id,
+                len(node_uuids),
+            )
+            return True
+        except Exception as exc:
+            logger.warning(
+                "保存推演前图谱节点基线失败，将在图谱展示时使用历史时间戳降级判断: "
+                "simulation_id=%s, graph_id=%s, error=%s",
+                simulation_id,
+                graph_id,
+                exc,
+            )
+            return False
     
     @classmethod
     def start_simulation(
@@ -345,7 +597,8 @@ class SimulationRunner:
         platform: str = "parallel",  # twitter / reddit / parallel
         max_rounds: int = None,  # 最大模拟轮数（可选，用于截断过长的模拟）
         enable_graph_memory_update: bool = False,  # 是否将活动更新到Zep图谱
-        graph_id: str = None  # Zep图谱ID（启用图谱更新时必需）
+        graph_id: str = None,  # Zep图谱ID（启用图谱更新时必需）
+        graph_backend: str = None,
     ) -> SimulationRunState:
         """
         启动模拟
@@ -371,6 +624,12 @@ class SimulationRunner:
         
         if not os.path.exists(config_path):
             raise ValueError(f"模拟配置不存在，请先调用 /prepare 接口")
+
+        env_status = _ensure_simulation_environment_ready()
+        logger.info(
+            "模拟环境预检通过: python=%s",
+            env_status.get("python"),
+        )
         
         with open(config_path, 'r', encoding='utf-8') as f:
             config = json.load(f)
@@ -378,7 +637,7 @@ class SimulationRunner:
         # 初始化运行状态
         time_config = config.get("time_config", {})
         total_hours = time_config.get("total_simulation_hours", 72)
-        minutes_per_round = time_config.get("minutes_per_round", 30)
+        minutes_per_round = time_config.get("minutes_per_round", 60)
         total_rounds = int(total_hours * 60 / minutes_per_round)
         
         # 如果指定了最大轮数，则截断
@@ -404,7 +663,36 @@ class SimulationRunner:
                 raise ValueError("启用图谱记忆更新时必须提供 graph_id")
             
             try:
-                ZepGraphMemoryManager.create_updater(simulation_id, graph_id)
+                cls._capture_graph_memory_baseline(
+                    simulation_id, graph_id, backend=graph_backend
+                )
+                updater_error = []
+
+                def create_graph_memory_updater():
+                    try:
+                        ZepGraphMemoryManager.create_updater(
+                            simulation_id,
+                            graph_id,
+                            backend=graph_backend,
+                        )
+                    except Exception as updater_exc:
+                        updater_error.append(updater_exc)
+
+                updater_thread = threading.Thread(
+                    target=create_graph_memory_updater,
+                    daemon=True,
+                    name=f"GraphMemoryInit-{simulation_id}",
+                )
+                updater_thread.start()
+                updater_thread.join(timeout=max(1.0, Config.GRAPH_MEMORY_STOP_TIMEOUT_SECONDS))
+                if updater_error:
+                    raise updater_error[0]
+                if updater_thread.is_alive():
+                    logger.warning(
+                        "图谱记忆更新器初始化仍在后台进行，模拟将先启动: simulation_id=%s, graph_id=%s",
+                        simulation_id,
+                        graph_id,
+                    )
                 cls._graph_memory_enabled[simulation_id] = True
                 logger.info(f"已启用图谱记忆更新: simulation_id={simulation_id}, graph_id={graph_id}")
             except Exception as e:
@@ -1160,6 +1448,7 @@ class SimulationRunner:
         # 要删除的文件列表（包括数据库文件）
         files_to_delete = [
             "run_state.json",
+            "graph_memory_baseline.json",
             "simulation.log",
             "stdout.log",
             "stderr.log",
@@ -1790,4 +2079,3 @@ class SimulationRunner:
             results = results[:limit]
         
         return results
-

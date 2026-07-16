@@ -7,6 +7,7 @@ OASIS模拟管理器
 import os
 import json
 import shutil
+import csv
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -17,6 +18,8 @@ from ..utils.logger import get_logger
 from .zep_entity_reader import ZepEntityReader, FilteredEntities
 from .oasis_profile_generator import OasisProfileGenerator, OasisAgentProfile
 from .simulation_config_generator import SimulationConfigGenerator, SimulationParameters
+from .real_entity_resolver import RealEntityResolver, VERIFIED
+from .location_entity_filter import is_location_entity_node
 
 logger = get_logger('mirofish.simulation')
 
@@ -45,6 +48,7 @@ class SimulationState:
     simulation_id: str
     project_id: str
     graph_id: str
+    graph_backend: Optional[str] = None
     
     # 平台启用状态
     enable_twitter: bool = True
@@ -57,6 +61,11 @@ class SimulationState:
     entities_count: int = 0
     profiles_count: int = 0
     entity_types: List[str] = field(default_factory=list)
+    verification_candidate_count: int = 0
+    verification_verified_count: int = 0
+    verification_skipped_count: int = 0
+    verification_skipped_entities: List[Dict[str, Any]] = field(default_factory=list)
+    profile_provenance: List[Dict[str, Any]] = field(default_factory=list)
     
     # 配置生成信息
     config_generated: bool = False
@@ -80,12 +89,18 @@ class SimulationState:
             "simulation_id": self.simulation_id,
             "project_id": self.project_id,
             "graph_id": self.graph_id,
+            "graph_backend": self.graph_backend,
             "enable_twitter": self.enable_twitter,
             "enable_reddit": self.enable_reddit,
             "status": self.status.value,
             "entities_count": self.entities_count,
             "profiles_count": self.profiles_count,
             "entity_types": self.entity_types,
+            "verification_candidate_count": self.verification_candidate_count,
+            "verification_verified_count": self.verification_verified_count,
+            "verification_skipped_count": self.verification_skipped_count,
+            "verification_skipped_entities": self.verification_skipped_entities,
+            "profile_provenance": self.profile_provenance,
             "config_generated": self.config_generated,
             "config_reasoning": self.config_reasoning,
             "current_round": self.current_round,
@@ -102,10 +117,16 @@ class SimulationState:
             "simulation_id": self.simulation_id,
             "project_id": self.project_id,
             "graph_id": self.graph_id,
+            "graph_backend": self.graph_backend,
             "status": self.status.value,
             "entities_count": self.entities_count,
             "profiles_count": self.profiles_count,
             "entity_types": self.entity_types,
+            "verification_candidate_count": self.verification_candidate_count,
+            "verification_verified_count": self.verification_verified_count,
+            "verification_skipped_count": self.verification_skipped_count,
+            "verification_skipped_entities": self.verification_skipped_entities,
+            "profile_provenance": self.profile_provenance,
             "config_generated": self.config_generated,
             "error": self.error,
         }
@@ -140,6 +161,14 @@ class SimulationManager:
         sim_dir = os.path.join(self.SIMULATION_DATA_DIR, simulation_id)
         os.makedirs(sim_dir, exist_ok=True)
         return sim_dir
+
+    def _resolve_simulation_dir(self, simulation_id: str) -> str:
+        """解析模拟数据目录路径，不主动创建目录。"""
+        base_dir = os.path.abspath(self.SIMULATION_DATA_DIR)
+        sim_dir = os.path.abspath(os.path.join(base_dir, simulation_id))
+        if os.path.commonpath([base_dir, sim_dir]) != base_dir:
+            raise ValueError("非法的模拟 ID")
+        return sim_dir
     
     def _save_simulation_state(self, state: SimulationState):
         """保存模拟状态到文件"""
@@ -158,7 +187,7 @@ class SimulationManager:
         if simulation_id in self._simulations:
             return self._simulations[simulation_id]
         
-        sim_dir = self._get_simulation_dir(simulation_id)
+        sim_dir = self._resolve_simulation_dir(simulation_id)
         state_file = os.path.join(sim_dir, "state.json")
         
         if not os.path.exists(state_file):
@@ -171,12 +200,18 @@ class SimulationManager:
             simulation_id=simulation_id,
             project_id=data.get("project_id", ""),
             graph_id=data.get("graph_id", ""),
+            graph_backend=data.get("graph_backend"),
             enable_twitter=data.get("enable_twitter", True),
             enable_reddit=data.get("enable_reddit", True),
             status=SimulationStatus(data.get("status", "created")),
             entities_count=data.get("entities_count", 0),
             profiles_count=data.get("profiles_count", 0),
             entity_types=data.get("entity_types", []),
+            verification_candidate_count=data.get("verification_candidate_count", 0),
+            verification_verified_count=data.get("verification_verified_count", 0),
+            verification_skipped_count=data.get("verification_skipped_count", 0),
+            verification_skipped_entities=data.get("verification_skipped_entities", []),
+            profile_provenance=data.get("profile_provenance", []),
             config_generated=data.get("config_generated", False),
             config_reasoning=data.get("config_reasoning", ""),
             current_round=data.get("current_round", 0),
@@ -189,11 +224,29 @@ class SimulationManager:
         
         self._simulations[simulation_id] = state
         return state
+
+    def delete_simulation(self, simulation_id: str) -> bool:
+        """删除单个模拟历史记录及其本地文件。"""
+        state = self._load_simulation_state(simulation_id)
+        if not state:
+            self._simulations.pop(simulation_id, None)
+            return False
+
+        sim_dir = self._resolve_simulation_dir(simulation_id)
+        if os.path.isdir(sim_dir):
+            shutil.rmtree(sim_dir)
+        elif os.path.exists(sim_dir):
+            os.remove(sim_dir)
+
+        self._simulations.pop(simulation_id, None)
+        logger.info("删除模拟历史记录: %s", simulation_id)
+        return True
     
     def create_simulation(
         self,
         project_id: str,
         graph_id: str,
+        graph_backend: Optional[str] = None,
         enable_twitter: bool = True,
         enable_reddit: bool = True,
     ) -> SimulationState:
@@ -216,6 +269,7 @@ class SimulationManager:
             simulation_id=simulation_id,
             project_id=project_id,
             graph_id=graph_id,
+            graph_backend=graph_backend,
             enable_twitter=enable_twitter,
             enable_reddit=enable_reddit,
             status=SimulationStatus.CREATED,
@@ -234,7 +288,11 @@ class SimulationManager:
         defined_entity_types: Optional[List[str]] = None,
         use_llm_for_profiles: bool = True,
         progress_callback: Optional[callable] = None,
-        parallel_profile_count: int = 3
+        parallel_profile_count: int = 3,
+        use_real_profiles: bool = True,
+        strict_real_mode: bool = False,
+        allow_group_agents: bool = True,
+        min_source_count: int = 1,
     ) -> SimulationState:
         """
         准备模拟环境（全程自动化）
@@ -254,6 +312,11 @@ class SimulationManager:
             use_llm_for_profiles: 是否使用LLM生成详细人设
             progress_callback: 进度回调函数 (stage, progress, message)
             parallel_profile_count: 并行生成人设的数量，默认3
+            use_real_profiles: 是否启用真实资料验证画像
+            strict_real_mode: 严格真实模式。默认关闭；启用后只有 verified 实体会进入人设生成。
+                关闭时会保留未核验实体，使用图谱上下文生成模拟画像，并保留 verification_status。
+            allow_group_agents: 是否允许机构/群体实体进入Agent，默认 true
+            min_source_count: verified 所需最少来源数
             
         Returns:
             SimulationState
@@ -272,7 +335,7 @@ class SimulationManager:
             if progress_callback:
                 progress_callback("reading", 0, "正在连接Zep图谱...")
             
-            reader = ZepEntityReader()
+            reader = ZepEntityReader(backend=state.graph_backend or Config.ZEP_BACKEND)
             
             if progress_callback:
                 progress_callback("reading", 30, "正在读取节点数据...")
@@ -282,26 +345,118 @@ class SimulationManager:
                 defined_entity_types=defined_entity_types,
                 enrich_with_edges=True
             )
+
+            agent_candidate_entities = [
+                entity for entity in filtered.entities
+                if not is_location_entity_node(entity)
+            ]
+            skipped_location_count = filtered.filtered_count - len(agent_candidate_entities)
+            if skipped_location_count > 0:
+                logger.warning(
+                    "准备模拟时跳过 %s 个地点/场所实体，不进入Agent生成: simulation_id=%s",
+                    skipped_location_count,
+                    simulation_id,
+                )
             
-            state.entities_count = filtered.filtered_count
-            state.entity_types = list(filtered.entity_types)
+            state.entities_count = len(agent_candidate_entities)
+            state.entity_types = sorted({
+                entity.get_entity_type() or "Entity"
+                for entity in agent_candidate_entities
+            })
             
             if progress_callback:
                 progress_callback(
                     "reading", 100, 
-                    f"完成，共 {filtered.filtered_count} 个实体",
-                    current=filtered.filtered_count,
-                    total=filtered.filtered_count
+                    f"完成，共 {len(agent_candidate_entities)} 个可生成Agent的实体",
+                    current=len(agent_candidate_entities),
+                    total=len(agent_candidate_entities)
                 )
             
-            if filtered.filtered_count == 0:
+            if not agent_candidate_entities:
                 state.status = SimulationStatus.FAILED
                 state.error = "没有找到符合条件的实体，请检查图谱是否正确构建"
                 self._save_simulation_state(state)
                 return state
+
+            entities_for_profiles = agent_candidate_entities
+            resolved_results = []
+            resolved_by_uuid = {}
+
+            if use_real_profiles:
+                if progress_callback:
+                    progress_callback(
+                        "verifying_entities", 0,
+                        "开始验证真实实体...",
+                        current=0,
+                        total=len(entities_for_profiles)
+                    )
+
+                resolver = RealEntityResolver(
+                    min_source_count=min_source_count,
+                    allow_group_agents=allow_group_agents,
+                    concurrency=Config.REAL_ENTITY_RESOLVE_CONCURRENCY,
+                )
+                resolved_results = resolver.resolve_entities(entities_for_profiles)
+                verified_results = [item for item in resolved_results if item.verification_status == VERIFIED]
+                skipped_results = [item for item in resolved_results if item.verification_status != VERIFIED]
+                state.verification_candidate_count = len(resolved_results)
+                state.verification_verified_count = len(verified_results)
+                state.verification_skipped_count = len(skipped_results)
+                state.verification_skipped_entities = [item.to_dict() for item in skipped_results]
+                logger.info(
+                    "真实实体验证完成: simulation_id=%s, candidates=%s, verified=%s, skipped=%s, allow_group_agents=%s",
+                    simulation_id,
+                    len(resolved_results),
+                    len(verified_results),
+                    len(skipped_results),
+                    allow_group_agents,
+                )
+
+                resolution_path = os.path.join(sim_dir, "real_entity_resolution.json")
+                with open(resolution_path, 'w', encoding='utf-8') as f:
+                    json.dump([item.to_dict() for item in resolved_results], f, ensure_ascii=False, indent=2)
+
+                if progress_callback:
+                    progress_callback(
+                        "verifying_entities", 100,
+                        f"验证完成，verified={len(verified_results)}, skipped={len(skipped_results)}",
+                        current=len(resolved_results),
+                        total=len(resolved_results)
+                    )
+
+                resolved_by_uuid = {item.entity_uuid: item for item in resolved_results}
+                if strict_real_mode:
+                    verified_uuids = {item.entity_uuid for item in verified_results}
+                    entities_for_profiles = [
+                        entity for entity in agent_candidate_entities
+                        if entity.uuid in verified_uuids
+                    ]
+                    state.entities_count = len(entities_for_profiles)
+                    state.entity_types = sorted({
+                        entity.get_entity_type() or "Entity"
+                        for entity in entities_for_profiles
+                    })
+
+                    if not entities_for_profiles:
+                        state.status = SimulationStatus.FAILED
+                        state.error = (
+                            "严格真实模式下没有通过 verified 的实体，已拒绝生成伪真实人设。"
+                            "请检查图谱实体、事件上下文或真实资料来源。"
+                        )
+                        self._save_simulation_state(state)
+                        return state
+                else:
+                    logger.info(
+                        "严格真实模式关闭，保留全部图谱实体生成画像: simulation_id=%s, entities=%s, verified=%s, unverified=%s",
+                        simulation_id,
+                        len(entities_for_profiles),
+                        len(verified_results),
+                        len(skipped_results),
+                    )
+                self._save_simulation_state(state)
             
             # ========== 阶段2: 生成Agent Profile ==========
-            total_entities = len(filtered.entities)
+            total_entities = len(entities_for_profiles)
             
             if progress_callback:
                 progress_callback(
@@ -312,7 +467,10 @@ class SimulationManager:
                 )
             
             # 传入graph_id以启用Zep检索功能，获取更丰富的上下文
-            generator = OasisProfileGenerator(graph_id=state.graph_id)
+            generator = OasisProfileGenerator(
+                graph_id=state.graph_id,
+                graph_backend=state.graph_backend or Config.ZEP_BACKEND,
+            )
             
             def profile_progress(current, total, msg):
                 if progress_callback:
@@ -336,16 +494,19 @@ class SimulationManager:
                 realtime_platform = "twitter"
             
             profiles = generator.generate_profiles_from_entities(
-                entities=filtered.entities,
+                entities=entities_for_profiles,
                 use_llm=use_llm_for_profiles,
                 progress_callback=profile_progress,
                 graph_id=state.graph_id,  # 传入graph_id用于Zep检索
                 parallel_count=parallel_profile_count,  # 并行生成数量
                 realtime_output_path=realtime_output_path,  # 实时保存路径
-                output_platform=realtime_platform  # 输出格式
+                output_platform=realtime_platform,  # 输出格式
+                resolved_real_entities=resolved_by_uuid if use_real_profiles else None,
+                strict_real_mode=strict_real_mode and use_real_profiles,
             )
             
             state.profiles_count = len(profiles)
+            state.profile_provenance = [profile._provenance_dict() for profile in profiles]
             
             # 保存Profile文件（注意：Twitter使用CSV格式，Reddit使用JSON格式）
             # Reddit 已经在生成过程中实时保存了，这里再保存一次确保完整性
@@ -405,7 +566,7 @@ class SimulationManager:
                 graph_id=state.graph_id,
                 simulation_requirement=simulation_requirement,
                 document_text=document_text,
-                entities=filtered.entities,
+                entities=entities_for_profiles,
                 enable_twitter=state.enable_twitter,
                 enable_reddit=state.enable_reddit
             )
@@ -471,6 +632,39 @@ class SimulationManager:
                         simulations.append(state)
         
         return simulations
+
+    def _load_profiles_file(self, sim_dir: str, platform: str) -> List[Dict[str, Any]]:
+        """按平台读取 profile 文件，兼容 Reddit JSON 与 Twitter CSV/历史 JSON。"""
+        normalized_platform = (platform or "reddit").lower()
+
+        if normalized_platform == PlatformType.TWITTER.value:
+            csv_path = os.path.join(sim_dir, "twitter_profiles.csv")
+            if os.path.exists(csv_path):
+                with open(csv_path, 'r', encoding='utf-8', newline='') as f:
+                    rows = list(csv.DictReader(f))
+                for row in rows:
+                    for key in ("source_citations", "runtime_traits", "provenance"):
+                        value = row.get(key)
+                        if value:
+                            try:
+                                row[key] = json.loads(value)
+                            except json.JSONDecodeError:
+                                pass
+                return rows
+
+            legacy_json_path = os.path.join(sim_dir, "twitter_profiles.json")
+            if os.path.exists(legacy_json_path):
+                with open(legacy_json_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+
+            return []
+
+        profile_path = os.path.join(sim_dir, f"{normalized_platform}_profiles.json")
+        if not os.path.exists(profile_path):
+            return []
+
+        with open(profile_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
     
     def get_profiles(self, simulation_id: str, platform: str = "reddit") -> List[Dict[str, Any]]:
         """获取模拟的Agent Profile"""
@@ -479,13 +673,7 @@ class SimulationManager:
             raise ValueError(f"模拟不存在: {simulation_id}")
         
         sim_dir = self._get_simulation_dir(simulation_id)
-        profile_path = os.path.join(sim_dir, f"{platform}_profiles.json")
-        
-        if not os.path.exists(profile_path):
-            return []
-        
-        with open(profile_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        return self._load_profiles_file(sim_dir, platform)
     
     def get_simulation_config(self, simulation_id: str) -> Optional[Dict[str, Any]]:
         """获取模拟配置"""

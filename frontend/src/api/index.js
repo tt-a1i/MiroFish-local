@@ -1,8 +1,20 @@
 import axios from 'axios'
 
+function normalizeBaseURL(baseURL) {
+  const trimmed = (baseURL || '').replace(/\/+$/, '')
+
+  // 前端各 API 模块已经带 /api 前缀，本地 Vite 代理和 Nginx 反代都直接吃 /api 路径。
+  // 如果 baseURL 也配置成 /api，会变成 /api/api/...，这里直接归一化为空。
+  if (trimmed === '/api') {
+    return ''
+  }
+
+  return trimmed
+}
+
 // 创建axios实例
 const service = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:5001',
+  baseURL: normalizeBaseURL(import.meta.env.VITE_API_BASE_URL),
   timeout: 300000, // 5分钟超时（本体生成可能需要较长时间）
   headers: {
     'Content-Type': 'application/json'
@@ -12,6 +24,15 @@ const service = axios.create({
 // 请求拦截器
 service.interceptors.request.use(
   config => {
+    // 避免 baseURL 已经包含 /api 时，再和业务层的 /api/... 路径重复拼接。
+    if (
+      typeof config.baseURL === 'string' &&
+      config.baseURL.endsWith('/api') &&
+      typeof config.url === 'string' &&
+      config.url.startsWith('/api/')
+    ) {
+      config.url = config.url.slice(4)
+    }
     return config
   },
   error => {
@@ -28,13 +49,19 @@ service.interceptors.response.use(
     // 如果返回的状态码不是success，则抛出错误
     if (!res.success && res.success !== undefined) {
       console.error('API Error:', res.error || res.message || 'Unknown error')
-      return Promise.reject(new Error(res.error || res.message || 'Error'))
+      const apiError = new Error(res.error || res.message || 'Error')
+      apiError.response = response
+      apiError.status = response.status
+      return Promise.reject(apiError)
     }
     
     return res
   },
   error => {
     console.error('Response error:', error)
+    if (error?.response?.status) {
+      error.status = error.response.status
+    }
     
     // 处理超时
     if (error.code === 'ECONNABORTED' && error.message.includes('timeout')) {

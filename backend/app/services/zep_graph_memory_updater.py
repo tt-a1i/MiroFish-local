@@ -8,20 +8,43 @@ Zep图谱记忆更新服务
 """
 
 import os
+import json
+import hashlib
 import time
 import threading
-import json
-from typing import Dict, Any, List, Optional, Callable
+from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from queue import Queue, Empty
 
-from ..config import Config
 from ..utils.logger import get_logger
+from ..utils.neo4j_errors import format_neo4j_auth_error, is_neo4j_auth_error
+from ..utils.time_utils import utc_now_iso, parse_iso_datetime
 from .zep_factory import get_zep_client
 from .zep_adapter import ZepClientAdapter
+from ..config import Config
 
 logger = get_logger('mirofish.zep_graph_memory_updater')
+
+SIMULATION_DATA_DIR = os.path.join(
+    os.path.dirname(__file__),
+    '../../uploads/simulations'
+)
+
+SIMULATION_MEMORY_LABEL = "未来推演记忆"
+SIMULATION_MEMORY_LABEL_KEY = "FutureSimulationMemory"
+
+# 双平台推演 episode 字段汉化映射（避免 graphiti LLM 从 JSON payload 中提取英文实体名）
+# 仅用于 graphiti backend 的 episode data 序列化，不影响内部追踪字段
+EPISODE_FIELD_HANIZATION_MAP = {
+    "platform": {
+        "twitter": "推特平台",
+        "reddit": "Reddit社区",
+    },
+    "source": {
+        "dual_platform_simulation": "双平台推演",
+    },
+}
 
 
 @dataclass
@@ -34,6 +57,50 @@ class AgentActivity:
     action_args: Dict[str, Any]
     round_num: int
     timestamp: str
+
+    @classmethod
+    def from_action_dict(cls, data: Dict[str, Any], platform: str) -> "AgentActivity":
+        """从 actions.jsonl 的一条动作记录恢复 activity。"""
+        return cls(
+            platform=platform,
+            agent_id=data.get("agent_id", 0),
+            agent_name=data.get("agent_name", ""),
+            action_type=data.get("action_type", ""),
+            action_args=data.get("action_args", {}),
+            round_num=data.get("round", data.get("round_num", 0)),
+            timestamp=data.get("timestamp", utc_now_iso()),
+        )
+
+    def build_activity_id(self) -> str:
+        """为 activity 生成稳定幂等 ID。"""
+        canonical_args = json.dumps(self.action_args or {}, ensure_ascii=False, sort_keys=True)
+        raw = "|".join([
+            self.platform or "",
+            str(self.round_num),
+            str(self.agent_id),
+            self.agent_name or "",
+            self.action_type or "",
+            self.timestamp or "",
+            canonical_args,
+        ])
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    def to_episode_payload(self) -> Dict[str, Any]:
+        """构造结构化 episode payload。"""
+        return {
+            "platform": self.platform,
+            "agent_id": self.agent_id,
+            "agent_name": self.agent_name,
+            "action_type": self.action_type,
+            "action_args": self.action_args or {},
+            "round_num": self.round_num,
+            "timestamp": self.timestamp,
+            "activity_id": self.build_activity_id(),
+            "source": "dual_platform_simulation",
+            "memory_label": SIMULATION_MEMORY_LABEL,
+            "memory_label_key": SIMULATION_MEMORY_LABEL_KEY,
+            "episode_text": self.to_episode_text(),
+        }
     
     def to_episode_text(self) -> str:
         """
@@ -226,7 +293,13 @@ class ZepGraphMemoryUpdater:
     MAX_RETRIES = 3
     RETRY_DELAY = 2  # 秒
     
-    def __init__(self, graph_id: str, api_key: Optional[str] = None):
+    def __init__(
+        self,
+        graph_id: str,
+        api_key: Optional[str] = None,
+        backend: Optional[str] = None,
+        simulation_id: Optional[str] = None,
+    ):
         """
         初始化更新器
 
@@ -235,9 +308,14 @@ class ZepGraphMemoryUpdater:
             api_key: Zep API Key（可选，已废弃，使用工厂模式）
         """
         self.graph_id = graph_id
+        self.backend = backend or Config.ZEP_BACKEND
+        self.simulation_id = simulation_id
+        self._outbox_path = self._build_outbox_path(simulation_id) if simulation_id else None
+        self._outbox_lock = threading.Lock()
+        self._outbox = self._load_outbox()
 
         # 使用单例获取适配器（避免重复初始化）
-        self.client: ZepClientAdapter = get_zep_client()
+        self.client: ZepClientAdapter = get_zep_client(backend=self.backend)
         
         # 活动队列
         self._activity_queue: Queue = Queue()
@@ -259,8 +337,176 @@ class ZepGraphMemoryUpdater:
         self._total_items_sent = 0  # 成功发送到Zep的活动条数
         self._failed_count = 0      # 发送失败的批次数
         self._skipped_count = 0     # 被过滤跳过的活动数（DO_NOTHING）
+        self._auth_error: Optional[str] = None  # Neo4j 认证错误会触发本轮写回熔断
         
         logger.info(f"ZepGraphMemoryUpdater 初始化完成: graph_id={graph_id}, batch_size={self.BATCH_SIZE}")
+
+    def _build_outbox_path(self, simulation_id: str) -> str:
+        sim_dir = os.path.join(SIMULATION_DATA_DIR, simulation_id)
+        os.makedirs(sim_dir, exist_ok=True)
+        return os.path.join(sim_dir, "graph_memory_outbox.json")
+
+    def _load_outbox(self) -> Dict[str, Dict[str, Any]]:
+        if not self._outbox_path or not os.path.exists(self._outbox_path):
+            return {}
+        try:
+            with open(self._outbox_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return data if isinstance(data, dict) else {}
+        except Exception as e:
+            logger.warning(f"读取 graph memory outbox 失败，使用空状态继续: {e}")
+            return {}
+
+    def _save_outbox(self):
+        if not self._outbox_path:
+            return
+        with open(self._outbox_path, 'w', encoding='utf-8') as f:
+            json.dump(self._outbox, f, ensure_ascii=False, indent=2)
+
+    def _mark_outbox_record(self, activity_id: str, **updates):
+        if not self._outbox_path:
+            return
+        try:
+            with self._outbox_lock:
+                record = self._outbox.setdefault(activity_id, {})
+                record.update(updates)
+                self._save_outbox()
+        except Exception as e:
+            logger.error(
+                "写入 graph memory outbox 失败: graph_id=%s, activity_id=%s, error=%s",
+                self.graph_id,
+                activity_id,
+                e,
+            )
+
+    def _iter_activity_log_records(self):
+        if not self.simulation_id:
+            return
+
+        sim_dir = os.path.join(SIMULATION_DATA_DIR, self.simulation_id)
+        for platform in ("twitter", "reddit"):
+            log_path = os.path.join(sim_dir, platform, "actions.jsonl")
+            if not os.path.exists(log_path):
+                continue
+            try:
+                with open(log_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            data = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if "event_type" in data:
+                            continue
+                        activity = AgentActivity.from_action_dict(data, platform)
+                        if activity.action_type == "DO_NOTHING":
+                            continue
+                        yield activity
+            except Exception as e:
+                logger.warning(
+                    "读取 activity 日志用于 outbox 恢复失败: simulation_id=%s, platform=%s, error=%s",
+                    self.simulation_id,
+                    platform,
+                    e,
+                )
+
+    def _hydrate_outbox_from_action_logs(self) -> int:
+        """用 actions.jsonl 回填旧 outbox 缺失的可重放字段。"""
+        if not self._outbox_path:
+            return 0
+
+        hydrated = 0
+        for activity in self._iter_activity_log_records() or []:
+            activity_id = activity.build_activity_id()
+            with self._outbox_lock:
+                record = self._outbox.get(activity_id)
+            if not record or record.get("status") == "sent":
+                continue
+            if record.get("activity"):
+                continue
+
+            try:
+                request = self._build_episode_request(activity)
+            except Exception as e:
+                self._mark_outbox_record(activity_id, last_error=str(e))
+                continue
+
+            self._mark_outbox_record(
+                activity_id,
+                activity=activity.to_episode_payload(),
+                graph_id=self.graph_id,
+                simulation_id=self.simulation_id,
+                platform=activity.platform,
+                action_type=activity.action_type,
+                agent_name=activity.agent_name,
+                timestamp=activity.timestamp,
+                round_num=activity.round_num,
+                reference_time=request["reference_time_iso"],
+                episode_type=request["episode_type"],
+                payload_preview=request["payload_preview"],
+            )
+            hydrated += 1
+
+        return hydrated
+
+    def _activity_from_outbox_record(self, activity_id: str, record: Dict[str, Any]) -> Optional[AgentActivity]:
+        payload = record.get("activity") or {}
+        if not isinstance(payload, dict):
+            payload = {}
+
+        platform = payload.get("platform") or record.get("platform")
+        action_type = payload.get("action_type") or record.get("action_type")
+        timestamp = payload.get("timestamp") or record.get("timestamp")
+        if not platform or not action_type or not timestamp:
+            return None
+
+        return AgentActivity(
+            platform=platform,
+            agent_id=payload.get("agent_id", record.get("agent_id", 0)),
+            agent_name=payload.get("agent_name", record.get("agent_name", "")),
+            action_type=action_type,
+            action_args=payload.get("action_args", record.get("action_args", {})) or {},
+            round_num=payload.get("round_num", record.get("round_num", 0)),
+            timestamp=timestamp,
+        )
+
+    def _is_activity_sent(self, activity_id: str) -> bool:
+        with self._outbox_lock:
+            record = self._outbox.get(activity_id)
+            return bool(record and record.get("status") == "sent")
+
+    def _build_episode_request(self, activity: AgentActivity) -> Dict[str, Any]:
+        payload = activity.to_episode_payload()
+        activity_id = payload["activity_id"]
+        reference_time = parse_iso_datetime(activity.timestamp)
+
+        if self.backend == "graphiti":
+            # 汉化 episode payload 中的英文字段值（如 platform、source），
+            # 避免 graphiti LLM 从 JSON payload 中提取英文实体名
+            graphiti_payload = dict(payload)
+            for field, mapping in EPISODE_FIELD_HANIZATION_MAP.items():
+                original = graphiti_payload.get(field)
+                if original and original in mapping:
+                    graphiti_payload[field] = mapping[original]
+            return {
+                "activity_id": activity_id,
+                "data": json.dumps(graphiti_payload, ensure_ascii=False, sort_keys=True),
+                "episode_type": "json",
+                "reference_time": reference_time,
+                "reference_time_iso": reference_time.isoformat(),
+                "payload_preview": graphiti_payload["episode_text"],
+            }
+
+        return {
+            "activity_id": activity_id,
+            "data": payload["episode_text"],
+            "episode_type": "text",
+            "reference_time": reference_time,
+            "reference_time_iso": reference_time.isoformat(),
+            "payload_preview": payload["episode_text"],
+        }
     
     def start(self):
         """启动后台工作线程"""
@@ -276,15 +522,30 @@ class ZepGraphMemoryUpdater:
         self._worker_thread.start()
         logger.info(f"ZepGraphMemoryUpdater 已启动: graph_id={self.graph_id}")
     
-    def stop(self):
+    def stop(self, flush: bool = True, timeout: Optional[float] = None):
         """停止后台工作线程"""
         self._running = False
-        
-        # 发送剩余的活动
-        self._flush_remaining()
+
+        if flush:
+            # 发送剩余的活动；停止服务或正常结束时尽力写回。
+            self._flush_remaining()
+        else:
+            dropped_count = self._drop_pending_activities()
+            if dropped_count:
+                logger.info(
+                    "重跑模拟时丢弃旧图谱记忆待写队列: graph_id=%s, dropped=%s",
+                    self.graph_id,
+                    dropped_count,
+                )
         
         if self._worker_thread and self._worker_thread.is_alive():
-            self._worker_thread.join(timeout=10)
+            join_timeout = Config.GRAPH_MEMORY_STOP_TIMEOUT_SECONDS if timeout is None else timeout
+            self._worker_thread.join(timeout=max(0, float(join_timeout or 0)))
+            if self._worker_thread.is_alive():
+                logger.warning(
+                    "图谱记忆更新器停止等待超时，后台线程将自行退出: graph_id=%s",
+                    self.graph_id,
+                )
         
         logger.info(f"ZepGraphMemoryUpdater 已停止: graph_id={self.graph_id}, "
                    f"total_activities={self._total_activities}, "
@@ -342,7 +603,7 @@ class ZepGraphMemoryUpdater:
             action_type=data.get("action_type", ""),
             action_args=data.get("action_args", {}),
             round_num=data.get("round", 0),
-            timestamp=data.get("timestamp", datetime.now().isoformat()),
+            timestamp=data.get("timestamp", utc_now_iso()),
         )
         
         self.add_activity(activity)
@@ -380,7 +641,7 @@ class ZepGraphMemoryUpdater:
     
     def _send_batch_activities(self, activities: List[AgentActivity], platform: str):
         """
-        批量发送活动到Zep图谱（合并为一条文本）
+        批量发送活动到Zep图谱
         
         Args:
             activities: Agent活动列表
@@ -388,33 +649,253 @@ class ZepGraphMemoryUpdater:
         """
         if not activities:
             return
-        
-        # 将多条活动合并为一条文本，用换行分隔
-        episode_texts = [activity.to_episode_text() for activity in activities]
-        combined_text = "\n".join(episode_texts)
-        
-        # 带重试的发送
-        for attempt in range(self.MAX_RETRIES):
+
+        succeeded = 0
+        failed = 0
+
+        for activity in activities:
+            if self._send_single_activity(activity):
+                succeeded += 1
+            else:
+                failed += 1
+
+        if succeeded > 0:
+            self._total_sent += 1
+            self._total_items_sent += succeeded
+            logger.info(
+                f"成功发送 {succeeded}/{len(activities)} 条{platform}活动到图谱 {self.graph_id}"
+            )
+            logger.debug(
+                f"活动时间范围: first={activities[0].timestamp}, last={activities[-1].timestamp}"
+            )
+
+        if failed > 0:
+            self._failed_count += failed
+            logger.warning(
+                f"{platform} 活动写回存在失败: failed={failed}, total={len(activities)}, graph_id={self.graph_id}"
+            )
+
+    def _send_single_activity(self, activity: AgentActivity) -> bool:
+        """逐条发送 activity，避免整批重放导致重复写入。"""
+        activity_id = activity.build_activity_id()
+
+        try:
+            request = self._build_episode_request(activity)
+        except Exception as e:
+            self._mark_outbox_record(
+                activity_id,
+                status="failed",
+                graph_id=self.graph_id,
+                simulation_id=self.simulation_id,
+                platform=activity.platform,
+                action_type=activity.action_type,
+                agent_name=activity.agent_name,
+                timestamp=activity.timestamp,
+                last_error=str(e),
+            )
+            logger.error(
+                "活动时间戳非法，拒绝写回: graph_id=%s, platform=%s, agent=%s, action=%s, "
+                "timestamp=%s, activity_id=%s, error=%s",
+                self.graph_id,
+                activity.platform,
+                activity.agent_name,
+                activity.action_type,
+                activity.timestamp,
+                activity_id,
+                e,
+            )
+            return False
+
+        if self._is_activity_sent(activity_id):
+            logger.debug(
+                "跳过已成功写回的 activity: graph_id=%s, activity_id=%s",
+                self.graph_id,
+                activity_id,
+            )
+            return True
+
+        if self._auth_error:
+            self._mark_outbox_record(
+                activity_id,
+                status="blocked",
+                last_error=self._auth_error,
+            )
+            logger.warning(
+                "跳过活动写回：Neo4j 认证错误熔断中: graph_id=%s, activity_id=%s, error=%s",
+                self.graph_id,
+                activity_id,
+                self._auth_error,
+            )
+            return False
+
+        self._mark_outbox_record(
+            activity_id,
+            status="pending",
+            graph_id=self.graph_id,
+            simulation_id=self.simulation_id,
+            platform=activity.platform,
+            agent_id=activity.agent_id,
+            action_type=activity.action_type,
+            agent_name=activity.agent_name,
+            timestamp=activity.timestamp,
+            round_num=activity.round_num,
+            activity=activity.to_episode_payload(),
+            reference_time=request["reference_time_iso"],
+            episode_type=request["episode_type"],
+            payload_preview=request["payload_preview"],
+        )
+
+        for attempt in range(1, self.MAX_RETRIES + 1):
             try:
-                self.client.add_episode(
-                    graph_id=self.graph_id,
-                    data=combined_text,
-                    episode_type="text"
+                self._mark_outbox_record(
+                    activity_id,
+                    status="sending",
+                    attempt_count=attempt,
+                    last_error=None,
                 )
-                
-                self._total_sent += 1
-                self._total_items_sent += len(activities)
-                logger.info(f"成功批量发送 {len(activities)} 条{platform}活动到图谱 {self.graph_id}")
-                logger.debug(f"批量内容预览: {combined_text[:200]}...")
-                return
-                
+                episode_uuid = self.client.add_episode(
+                    graph_id=self.graph_id,
+                    data=request["data"],
+                    episode_type=request["episode_type"],
+                    reference_time=request["reference_time"],
+                )
+                self._mark_outbox_record(
+                    activity_id,
+                    status="sent",
+                    episode_uuid=episode_uuid,
+                    sent_at=utc_now_iso(),
+                )
+                return True
             except Exception as e:
-                if attempt < self.MAX_RETRIES - 1:
-                    logger.warning(f"批量发送到Zep失败 (尝试 {attempt + 1}/{self.MAX_RETRIES}): {e}")
-                    time.sleep(self.RETRY_DELAY * (attempt + 1))
-                else:
-                    logger.error(f"批量发送到Zep失败，已重试{self.MAX_RETRIES}次: {e}")
-                    self._failed_count += 1
+                if self.backend == "graphiti" and is_neo4j_auth_error(e):
+                    self._auth_error = format_neo4j_auth_error(e)
+                    self._mark_outbox_record(
+                        activity_id,
+                        status="blocked",
+                        attempt_count=attempt,
+                        last_error=self._auth_error,
+                    )
+                    logger.error(
+                        "发送活动到Zep失败：检测到 Neo4j 认证错误，停止本轮重试: "
+                        "graph_id=%s, platform=%s, agent=%s, action=%s, "
+                        "timestamp=%s, attempt=%s/%s, activity_id=%s, error=%s",
+                        self.graph_id,
+                        activity.platform,
+                        activity.agent_name,
+                        activity.action_type,
+                        activity.timestamp,
+                        attempt,
+                        self.MAX_RETRIES,
+                        activity_id,
+                        self._auth_error,
+                    )
+                    return False
+
+                if attempt >= self.MAX_RETRIES:
+                    self._mark_outbox_record(
+                        activity_id,
+                        status="failed",
+                        attempt_count=attempt,
+                        last_error=str(e),
+                    )
+                    logger.error(
+                        "发送活动到Zep失败: graph_id=%s, platform=%s, agent=%s, action=%s, "
+                        "timestamp=%s, attempts=%s, activity_id=%s, error=%s",
+                        self.graph_id,
+                        activity.platform,
+                        activity.agent_name,
+                        activity.action_type,
+                        activity.timestamp,
+                        self.MAX_RETRIES,
+                        activity_id,
+                        e,
+                    )
+                    return False
+
+                self._mark_outbox_record(
+                    activity_id,
+                    status="retrying",
+                    attempt_count=attempt,
+                    last_error=str(e),
+                )
+                logger.warning(
+                    "发送活动到Zep失败，准备重试: graph_id=%s, platform=%s, agent=%s, action=%s, "
+                    "attempt=%s/%s, activity_id=%s, error=%s",
+                    self.graph_id,
+                    activity.platform,
+                    activity.agent_name,
+                    activity.action_type,
+                    attempt,
+                    self.MAX_RETRIES,
+                    activity_id,
+                    e,
+                )
+                time.sleep(self.RETRY_DELAY)
+
+    def replay_failed_outbox(
+        self,
+        statuses: Optional[List[str]] = None,
+        limit: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        重新发送 outbox 中失败或未完成的活动。
+
+        旧版本 outbox 可能没有保存 action_args，本方法会先尝试从 actions.jsonl
+        回填可重放字段，再逐条走原有幂等发送逻辑。
+        """
+        statuses = statuses or ["failed", "blocked"]
+        hydrated_count = self._hydrate_outbox_from_action_logs()
+
+        with self._outbox_lock:
+            candidates = [
+                (activity_id, dict(record))
+                for activity_id, record in self._outbox.items()
+                if record.get("status") in statuses
+            ]
+
+        if limit is not None and limit > 0:
+            candidates = candidates[:limit]
+
+        stats = {
+            "simulation_id": self.simulation_id,
+            "graph_id": self.graph_id,
+            "backend": self.backend,
+            "statuses": statuses,
+            "hydrated_count": hydrated_count,
+            "attempted": 0,
+            "sent": 0,
+            "failed": 0,
+            "skipped": 0,
+            "missing_payload": 0,
+        }
+
+        for activity_id, record in candidates:
+            activity = self._activity_from_outbox_record(activity_id, record)
+            if not activity:
+                stats["missing_payload"] += 1
+                self._mark_outbox_record(
+                    activity_id,
+                    status="failed",
+                    last_error="缺少可重放 activity payload，请确认 actions.jsonl 未被清理",
+                )
+                continue
+
+            if activity.build_activity_id() != activity_id:
+                stats["skipped"] += 1
+                self._mark_outbox_record(
+                    activity_id,
+                    status="failed",
+                    last_error="activity payload 与 outbox activity_id 不匹配",
+                )
+                continue
+
+            stats["attempted"] += 1
+            if self._send_single_activity(activity):
+                stats["sent"] += 1
+            else:
+                stats["failed"] += 1
+
+        return stats
     
     def _flush_remaining(self):
         """发送队列和缓冲区中剩余的活动"""
@@ -439,6 +920,23 @@ class ZepGraphMemoryUpdater:
             # 清空所有缓冲区
             for platform in self._platform_buffers:
                 self._platform_buffers[platform] = []
+
+    def _drop_pending_activities(self) -> int:
+        """强制重跑时丢弃旧运行的待写队列，避免阻塞新模拟启动。"""
+        dropped = 0
+        while not self._activity_queue.empty():
+            try:
+                self._activity_queue.get_nowait()
+                dropped += 1
+            except Empty:
+                break
+
+        with self._buffer_lock:
+            for platform, buffer in self._platform_buffers.items():
+                dropped += len(buffer)
+                self._platform_buffers[platform] = []
+
+        return dropped
     
     def get_stats(self) -> Dict[str, Any]:
         """获取统计信息"""
@@ -470,7 +968,12 @@ class ZepGraphMemoryManager:
     _lock = threading.Lock()
     
     @classmethod
-    def create_updater(cls, simulation_id: str, graph_id: str) -> ZepGraphMemoryUpdater:
+    def create_updater(
+        cls,
+        simulation_id: str,
+        graph_id: str,
+        backend: Optional[str] = None,
+    ) -> ZepGraphMemoryUpdater:
         """
         为模拟创建图谱记忆更新器
         
@@ -484,9 +987,17 @@ class ZepGraphMemoryManager:
         with cls._lock:
             # 如果已存在，先停止旧的
             if simulation_id in cls._updaters:
-                cls._updaters[simulation_id].stop()
+                cls._updaters[simulation_id].stop(
+                    flush=False,
+                    timeout=Config.GRAPH_MEMORY_STOP_TIMEOUT_SECONDS,
+                )
+                del cls._updaters[simulation_id]
             
-            updater = ZepGraphMemoryUpdater(graph_id)
+            updater = ZepGraphMemoryUpdater(
+                graph_id,
+                backend=backend,
+                simulation_id=simulation_id,
+            )
             updater.start()
             cls._updaters[simulation_id] = updater
             
@@ -499,11 +1010,16 @@ class ZepGraphMemoryManager:
         return cls._updaters.get(simulation_id)
     
     @classmethod
-    def stop_updater(cls, simulation_id: str):
+    def stop_updater(
+        cls,
+        simulation_id: str,
+        flush: bool = True,
+        timeout: Optional[float] = None,
+    ):
         """停止并移除模拟的更新器"""
         with cls._lock:
             if simulation_id in cls._updaters:
-                cls._updaters[simulation_id].stop()
+                cls._updaters[simulation_id].stop(flush=flush, timeout=timeout)
                 del cls._updaters[simulation_id]
                 logger.info(f"已停止图谱记忆更新器: simulation_id={simulation_id}")
     
@@ -522,7 +1038,10 @@ class ZepGraphMemoryManager:
             if cls._updaters:
                 for simulation_id, updater in list(cls._updaters.items()):
                     try:
-                        updater.stop()
+                        updater.stop(
+                            flush=False,
+                            timeout=Config.GRAPH_MEMORY_STOP_TIMEOUT_SECONDS,
+                        )
                     except Exception as e:
                         logger.error(f"停止更新器失败: simulation_id={simulation_id}, error={e}")
                 cls._updaters.clear()

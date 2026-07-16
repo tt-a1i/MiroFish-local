@@ -66,6 +66,7 @@ if sys.platform == 'win32':
 
 import argparse
 import asyncio
+import csv
 import json
 import logging
 import multiprocessing
@@ -96,7 +97,6 @@ if os.path.exists(_env_file):
     load_dotenv(_env_file)
     print(f"已加载环境配置: {_env_file}")
 else:
-    # 尝试加载 backend/.env
     _backend_env = os.path.join(_backend_dir, '.env')
     if os.path.exists(_backend_env):
         load_dotenv(_backend_env)
@@ -212,6 +212,192 @@ class CommandType:
     INTERVIEW = "interview"
     BATCH_INTERVIEW = "batch_interview"
     CLOSE_ENV = "close_env"
+
+
+RUNTIME_PROFILE_DIR = "runtime_profiles"
+PERSONA_RUNTIME_MARKER = "【运行期人设约束】"
+
+
+def truncate_text(value: Any, max_chars: int = 500) -> str:
+    """压缩长文本，避免运行期人设约束过长。"""
+    text = str(value or "").replace("\r", " ").replace("\n", " ")
+    text = " ".join(text.split()).strip()
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars].rstrip("，,；;、:： ") + "。"
+
+
+def build_agent_config_map(config: Dict[str, Any]) -> Dict[int, Dict[str, Any]]:
+    """按 agent_id 索引模拟配置中的 Agent 行为配置。"""
+    result = {}
+    for item in config.get("agent_configs", []) or []:
+        try:
+            agent_id = int(item.get("agent_id"))
+        except (TypeError, ValueError):
+            continue
+        result[agent_id] = item
+    return result
+
+
+def build_runtime_persona_constraint(
+    config: Dict[str, Any],
+    profile: Dict[str, Any],
+    agent_config: Optional[Dict[str, Any]] = None,
+    platform: str = "social",
+) -> str:
+    """
+    构建注入 OASIS profile 的运行期约束。
+
+    OASIS 常规发帖/评论由 LLMAction 触发，脚本层无法逐轮传入 system prompt；
+    因此把约束写入平台 profile 中 OASIS 已读取的人设字段。
+    """
+    event_config = config.get("event_config", {}) or {}
+    simulation_requirement = truncate_text(config.get("simulation_requirement"), 360)
+    narrative_direction = truncate_text(event_config.get("narrative_direction"), 260)
+    hot_topics = event_config.get("hot_topics", []) or []
+    hot_topics_text = "、".join(str(topic) for topic in hot_topics[:8] if str(topic).strip())
+
+    name = truncate_text(
+        profile.get("name")
+        or profile.get("realname")
+        or (agent_config or {}).get("entity_name")
+        or "",
+        80,
+    )
+    username = truncate_text(profile.get("username") or profile.get("user_name") or "", 80)
+    bio = truncate_text(profile.get("bio") or profile.get("description") or "", 220)
+    profession = truncate_text(
+        profile.get("profession")
+        or (agent_config or {}).get("entity_type")
+        or profile.get("source_entity_type")
+        or "",
+        80,
+    )
+    interested_topics = profile.get("interested_topics") or []
+    if isinstance(interested_topics, str):
+        interested_topics_text = truncate_text(interested_topics, 120)
+    else:
+        interested_topics_text = "、".join(
+            str(topic) for topic in interested_topics[:8] if str(topic).strip()
+        )
+
+    platform_label = "微博式公开信息流" if platform == "twitter" else "话题社区"
+    identity_line = f"- 当前身份：{name or username or '当前 Agent'}"
+    if username:
+        identity_line += f"（@{username}）"
+    if profession:
+        identity_line += f"，主体类型/职业：{profession}"
+    if bio:
+        identity_line += f"，简介：{bio}"
+
+    return f"""{PERSONA_RUNTIME_MARKER}
+{identity_line}
+- 本轮推演平台：{platform_label}。
+- 本次推演主题：{simulation_requirement or "围绕当前模拟事件传播与互动"}。
+- 热点话题边界：{hot_topics_text or "以当前事件、相关人物、机构、事实争议和舆论反应为主"}。
+- 舆论发展方向：{narrative_direction or "围绕事件进展、各方回应、公众质疑与态度变化展开"}。
+- 个人兴趣/相关话题：{interested_topics_text or "以本身份资料和事件关系为准"}。
+- 发帖、评论、转发或搜索时，必须优先选择与当前身份、主体职责、兴趣领域、已知人设和本次事件相关的话题。
+- 不主动发布与人设无关的泛娱乐、营销、阴谋论、生活闲聊或跨领域专家口吻内容；除非这些内容与当前事件和身份有直接关系。
+- 不冒充其他人物、媒体、机构、主播、专家或无关 KOL；不要替无权限主体发布正式声明。
+- 信息不足时，用符合身份的保守表达说明不确定，不能编造私人经历、现场细节、内部消息或机构立场。
+- 语言风格必须贴合身份：官方/机构账号克制正式，媒体账号偏新闻化，企业账号谨慎声明式，普通用户自然口语化，专家账号基于专业边界分析。
+""".strip()
+
+
+def append_runtime_constraint(base_text: str, constraint: str) -> str:
+    """把运行期约束追加到人设文本中，并避免重复追加。"""
+    clean_base = str(base_text or "").strip()
+    if PERSONA_RUNTIME_MARKER in clean_base:
+        clean_base = clean_base.split(PERSONA_RUNTIME_MARKER, 1)[0].strip()
+    if clean_base:
+        return f"{clean_base}\n\n{constraint}"
+    return constraint
+
+
+def prepare_twitter_runtime_profile(
+    source_profile_path: str,
+    config: Dict[str, Any],
+    simulation_dir: str,
+) -> str:
+    """生成带运行期人设约束的 Twitter profile 副本。"""
+    runtime_dir = os.path.join(simulation_dir, RUNTIME_PROFILE_DIR)
+    os.makedirs(runtime_dir, exist_ok=True)
+    runtime_profile_path = os.path.join(runtime_dir, "twitter_profiles.runtime.csv")
+    agent_config_map = build_agent_config_map(config)
+
+    with open(source_profile_path, "r", newline="", encoding="utf-8") as source_file:
+        reader = csv.DictReader(source_file)
+        fieldnames = list(reader.fieldnames or [])
+        if "user_char" not in fieldnames:
+            fieldnames.append("user_char")
+
+        rows = []
+        for index, row in enumerate(reader):
+            try:
+                agent_id = int(row.get("user_id", index))
+            except (TypeError, ValueError):
+                agent_id = index
+            constraint = build_runtime_persona_constraint(
+                config=config,
+                profile=row,
+                agent_config=agent_config_map.get(agent_id),
+                platform="twitter",
+            )
+            row["user_char"] = append_runtime_constraint(
+                row.get("user_char", ""),
+                constraint,
+            ).replace("\r", " ").replace("\n", " ")
+            rows.append(row)
+
+    with open(runtime_profile_path, "w", newline="", encoding="utf-8") as target_file:
+        writer = csv.DictWriter(target_file, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    return runtime_profile_path
+
+
+def prepare_reddit_runtime_profile(
+    source_profile_path: str,
+    config: Dict[str, Any],
+    simulation_dir: str,
+) -> str:
+    """生成带运行期人设约束的 Reddit profile 副本。"""
+    runtime_dir = os.path.join(simulation_dir, RUNTIME_PROFILE_DIR)
+    os.makedirs(runtime_dir, exist_ok=True)
+    runtime_profile_path = os.path.join(runtime_dir, "reddit_profiles.runtime.json")
+    agent_config_map = build_agent_config_map(config)
+
+    with open(source_profile_path, "r", encoding="utf-8") as source_file:
+        profiles = json.load(source_file)
+
+    if not isinstance(profiles, list):
+        raise ValueError(f"Reddit Profile 文件格式错误，应为数组: {source_profile_path}")
+
+    runtime_profiles = []
+    for index, profile in enumerate(profiles):
+        if not isinstance(profile, dict):
+            runtime_profiles.append(profile)
+            continue
+        item = dict(profile)
+        try:
+            agent_id = int(item.get("user_id", index))
+        except (TypeError, ValueError):
+            agent_id = index
+        constraint = build_runtime_persona_constraint(
+            config=config,
+            profile=item,
+            agent_config=agent_config_map.get(agent_id),
+            platform="reddit",
+        )
+        item["persona"] = append_runtime_constraint(item.get("persona", ""), constraint)
+        runtime_profiles.append(item)
+
+    with open(runtime_profile_path, "w", encoding="utf-8") as target_file:
+        json.dump(runtime_profiles, target_file, ensure_ascii=False, indent=2)
+
+    return runtime_profile_path
 
 
 class ParallelIPCHandler:
@@ -1134,6 +1320,11 @@ async def run_twitter_simulation(
     if not os.path.exists(profile_path):
         log_info(f"错误: Profile文件不存在: {profile_path}")
         return result
+    try:
+        profile_path = prepare_twitter_runtime_profile(profile_path, config, simulation_dir)
+        log_info(f"已生成运行期人设约束Profile: {profile_path}")
+    except Exception as e:
+        log_info(f"生成运行期人设约束Profile失败，使用原始Profile: {e}")
     
     result.agent_graph = await generate_twitter_agent_graph(
         profile_path=profile_path,
@@ -1208,12 +1399,12 @@ async def run_twitter_simulation(
     
     # 记录 round 0 结束
     if action_logger:
-        action_logger.log_round_end(0, initial_action_count)
+        action_logger.log_round_end(0, initial_action_count, 0)
     
     # 主模拟循环
     time_config = config.get("time_config", {})
     total_hours = time_config.get("total_simulation_hours", 72)
-    minutes_per_round = time_config.get("minutes_per_round", 30)
+    minutes_per_round = time_config.get("minutes_per_round", 60)
     total_rounds = (total_hours * 60) // minutes_per_round
     
     # 如果指定了最大轮数，则截断
@@ -1247,7 +1438,7 @@ async def run_twitter_simulation(
         if not active_agents:
             # 没有活跃agent时也记录round结束（actions_count=0）
             if action_logger:
-                action_logger.log_round_end(round_num + 1, 0)
+                action_logger.log_round_end(round_num + 1, 0, simulated_minutes // 60)
             continue
         
         actions = {agent: LLMAction() for _, agent in active_agents}
@@ -1272,7 +1463,7 @@ async def run_twitter_simulation(
                 round_action_count += 1
         
         if action_logger:
-            action_logger.log_round_end(round_num + 1, round_action_count)
+            action_logger.log_round_end(round_num + 1, round_action_count, simulated_minutes // 60)
         
         if (round_num + 1) % 20 == 0:
             progress = (round_num + 1) / total_rounds * 100
@@ -1325,6 +1516,11 @@ async def run_reddit_simulation(
     if not os.path.exists(profile_path):
         log_info(f"错误: Profile文件不存在: {profile_path}")
         return result
+    try:
+        profile_path = prepare_reddit_runtime_profile(profile_path, config, simulation_dir)
+        log_info(f"已生成运行期人设约束Profile: {profile_path}")
+    except Exception as e:
+        log_info(f"生成运行期人设约束Profile失败，使用原始Profile: {e}")
     
     result.agent_graph = await generate_reddit_agent_graph(
         profile_path=profile_path,
@@ -1407,12 +1603,12 @@ async def run_reddit_simulation(
     
     # 记录 round 0 结束
     if action_logger:
-        action_logger.log_round_end(0, initial_action_count)
+        action_logger.log_round_end(0, initial_action_count, 0)
     
     # 主模拟循环
     time_config = config.get("time_config", {})
     total_hours = time_config.get("total_simulation_hours", 72)
-    minutes_per_round = time_config.get("minutes_per_round", 30)
+    minutes_per_round = time_config.get("minutes_per_round", 60)
     total_rounds = (total_hours * 60) // minutes_per_round
     
     # 如果指定了最大轮数，则截断
@@ -1446,7 +1642,7 @@ async def run_reddit_simulation(
         if not active_agents:
             # 没有活跃agent时也记录round结束（actions_count=0）
             if action_logger:
-                action_logger.log_round_end(round_num + 1, 0)
+                action_logger.log_round_end(round_num + 1, 0, simulated_minutes // 60)
             continue
         
         actions = {agent: LLMAction() for _, agent in active_agents}
@@ -1471,7 +1667,7 @@ async def run_reddit_simulation(
                 round_action_count += 1
         
         if action_logger:
-            action_logger.log_round_end(round_num + 1, round_action_count)
+            action_logger.log_round_end(round_num + 1, round_action_count, simulated_minutes // 60)
         
         if (round_num + 1) % 20 == 0:
             progress = (round_num + 1) / total_rounds * 100
@@ -1551,7 +1747,7 @@ async def main():
     
     time_config = config.get("time_config", {})
     total_hours = time_config.get('total_simulation_hours', 72)
-    minutes_per_round = time_config.get('minutes_per_round', 30)
+    minutes_per_round = time_config.get('minutes_per_round', 60)
     config_total_rounds = (total_hours * 60) // minutes_per_round
     
     log_manager.info(f"模拟参数:")

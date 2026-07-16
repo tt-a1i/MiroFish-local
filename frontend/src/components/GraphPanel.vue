@@ -1,12 +1,12 @@
 <template>
   <div class="graph-panel">
     <div class="panel-header">
-      <span class="panel-title">Graph Relationship Visualization</span>
+      <span class="panel-title">智能体关系可视化</span>
       <!-- 顶部工具栏 (Internal Top Right) -->
       <div class="header-tools">
         <button class="tool-btn" @click="$emit('refresh')" :disabled="loading" title="刷新图谱">
           <span class="icon-refresh" :class="{ 'spinning': loading }">↻</span>
-          <span class="btn-text">Refresh</span>
+          <span class="btn-text">刷新</span>
         </button>
         <button class="tool-btn" @click="$emit('toggle-maximize')" title="最大化/还原">
           <span class="icon-maximize">⛶</span>
@@ -20,14 +20,14 @@
         <svg ref="graphSvg" class="graph-svg"></svg>
         
         <!-- 构建中/模拟中提示 -->
-        <div v-if="currentPhase === 1 || isSimulating" class="graph-building-hint">
+        <div v-if="showGraphActivityHint" class="graph-building-hint">
           <div class="memory-icon-wrapper">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="memory-icon">
               <path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 4.44-4.04z" />
               <path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-4.44-4.04z" />
             </svg>
           </div>
-          {{ isSimulating ? 'GraphRAG长短期记忆实时更新中' : '实时更新中...' }}
+          {{ isSimulating ? '知识图谱长短期记忆实时更新中' : '实时更新中...' }}
         </div>
         
         <!-- 模拟结束后的提示 -->
@@ -51,9 +51,9 @@
         <!-- 节点/边详情面板 -->
         <div v-if="selectedItem" class="detail-panel">
           <div class="detail-panel-header">
-            <span class="detail-title">{{ selectedItem.type === 'node' ? 'Node Details' : 'Relationship' }}</span>
+            <span class="detail-title">{{ selectedItem.type === 'node' ? '节点详情' : '关系详情' }}</span>
             <span v-if="selectedItem.type === 'node'" class="detail-type-badge" :style="{ background: selectedItem.color, color: '#fff' }">
-              {{ selectedItem.entityType }}
+              {{ translateEntityType(selectedItem.entityType) }}
             </span>
             <button class="detail-close" @click="closeDetailPanel">×</button>
           </div>
@@ -61,41 +61,50 @@
           <!-- 节点详情 -->
           <div v-if="selectedItem.type === 'node'" class="detail-content">
             <div class="detail-row">
-              <span class="detail-label">Name:</span>
-              <span class="detail-value">{{ selectedItem.data.name }}</span>
+              <span class="detail-label">名称:</span>
+              <span class="detail-value" :title="selectedItem.data.name">{{ formatNodeDetailName(selectedItem.data.name) }}</span>
             </div>
             <div class="detail-row">
               <span class="detail-label">UUID:</span>
               <span class="detail-value uuid-text">{{ selectedItem.data.uuid }}</span>
             </div>
             <div class="detail-row" v-if="selectedItem.data.created_at">
-              <span class="detail-label">Created:</span>
+              <span class="detail-label">创建时间:</span>
               <span class="detail-value">{{ formatDateTime(selectedItem.data.created_at) }}</span>
+            </div>
+            <div class="detail-row" v-if="selectedItem.data.updated_at">
+              <span class="detail-label">更新时间:</span>
+              <span class="detail-value">{{ formatDateTime(selectedItem.data.updated_at) }}</span>
             </div>
             
             <!-- Properties -->
-            <div class="detail-section" v-if="selectedItem.data.attributes && Object.keys(selectedItem.data.attributes).length > 0">
-              <div class="section-title">Properties:</div>
+            <div class="detail-section" v-if="selectedNodeAttributes.length > 0">
+              <div class="section-title">属性:</div>
               <div class="properties-list">
-                <div v-for="(value, key) in selectedItem.data.attributes" :key="key" class="property-item">
-                  <span class="property-key">{{ key }}:</span>
-                  <span class="property-value">{{ value || 'None' }}</span>
+                <div v-for="property in selectedNodeAttributes" :key="property.key" class="property-item">
+                  <span class="property-key">{{ property.label }}:</span>
+                  <span class="property-value">{{ property.value }}</span>
                 </div>
               </div>
             </div>
             
             <!-- Summary -->
             <div class="detail-section" v-if="selectedItem.data.summary">
-              <div class="section-title">Summary:</div>
+              <div class="section-title">摘要:</div>
               <div class="summary-text">{{ selectedItem.data.summary }}</div>
             </div>
             
             <!-- Labels -->
-            <div class="detail-section" v-if="selectedItem.data.labels && selectedItem.data.labels.length > 0">
-              <div class="section-title">Labels:</div>
+            <div class="detail-section" v-if="getNodeDisplayLabels(selectedItem.data).length > 0">
+              <div class="section-title">标签:</div>
               <div class="labels-list">
-                <span v-for="label in selectedItem.data.labels" :key="label" class="label-tag">
-                  {{ label }}
+                <span
+                  v-for="label in getNodeDisplayLabels(selectedItem.data)"
+                  :key="label"
+                  class="label-tag"
+                  :class="{ 'simulation-memory-label': isSimulationMemoryLabel(label) }"
+                >
+                  {{ translateGraphLabel(label) }}
                 </span>
               </div>
             </div>
@@ -106,8 +115,8 @@
             <!-- 自环组详情 -->
             <template v-if="selectedItem.data.isSelfLoopGroup">
               <div class="edge-relation-header self-loop-header">
-                {{ selectedItem.data.source_name }} - Self Relations
-                <span class="self-loop-count">{{ selectedItem.data.selfLoopCount }} items</span>
+                {{ selectedItem.data.source_name }} - 自环关系
+                <span class="self-loop-count">{{ selectedItem.data.selfLoopCount }} 项</span>
               </div>
               
               <div class="self-loop-list">
@@ -122,7 +131,7 @@
                     @click="toggleSelfLoop(loop.uuid || idx)"
                   >
                     <span class="self-loop-index">#{{ idx + 1 }}</span>
-                    <span class="self-loop-name">{{ loop.name || loop.fact_type || 'RELATED' }}</span>
+                    <span class="self-loop-name">{{ translateRelationType(loop.name || loop.fact_type) || '关联' }}</span>
                     <span class="self-loop-toggle">{{ expandedSelfLoops.has(loop.uuid || idx) ? '−' : '+' }}</span>
                   </div>
                   
@@ -132,19 +141,23 @@
                       <span class="detail-value uuid-text">{{ loop.uuid }}</span>
                     </div>
                     <div class="detail-row" v-if="loop.fact">
-                      <span class="detail-label">Fact:</span>
+                      <span class="detail-label">事实:</span>
                       <span class="detail-value fact-text">{{ loop.fact }}</span>
                     </div>
                     <div class="detail-row" v-if="loop.fact_type">
-                      <span class="detail-label">Type:</span>
-                      <span class="detail-value">{{ loop.fact_type }}</span>
+                      <span class="detail-label">类型:</span>
+                      <span class="detail-value">{{ translateRelationType(loop.fact_type) }}</span>
                     </div>
                     <div class="detail-row" v-if="loop.created_at">
-                      <span class="detail-label">Created:</span>
+                      <span class="detail-label">创建时间:</span>
                       <span class="detail-value">{{ formatDateTime(loop.created_at) }}</span>
                     </div>
+                    <div class="detail-row" v-if="loop.updated_at">
+                      <span class="detail-label">更新时间:</span>
+                      <span class="detail-value">{{ formatDateTime(loop.updated_at) }}</span>
+                    </div>
                     <div v-if="loop.episodes && loop.episodes.length > 0" class="self-loop-episodes">
-                      <span class="detail-label">Episodes:</span>
+                      <span class="detail-label">事件:</span>
                       <div class="episodes-list compact">
                         <span v-for="ep in loop.episodes" :key="ep" class="episode-tag small">{{ ep }}</span>
                       </div>
@@ -157,7 +170,7 @@
             <!-- 普通边详情 -->
             <template v-else>
               <div class="edge-relation-header">
-                {{ selectedItem.data.source_name }} → {{ selectedItem.data.name || 'RELATED_TO' }} → {{ selectedItem.data.target_name }}
+                {{ selectedItem.data.source_name }} → {{ translateRelationType(selectedItem.data.name) || '关联于' }} → {{ selectedItem.data.target_name }}
               </div>
               
               <div class="detail-row">
@@ -165,21 +178,21 @@
                 <span class="detail-value uuid-text">{{ selectedItem.data.uuid }}</span>
               </div>
               <div class="detail-row">
-                <span class="detail-label">Label:</span>
-                <span class="detail-value">{{ selectedItem.data.name || 'RELATED_TO' }}</span>
+                <span class="detail-label">标签:</span>
+                <span class="detail-value">{{ translateRelationType(selectedItem.data.name) || '关联于' }}</span>
               </div>
               <div class="detail-row">
-                <span class="detail-label">Type:</span>
-                <span class="detail-value">{{ selectedItem.data.fact_type || 'Unknown' }}</span>
+                <span class="detail-label">类型:</span>
+                <span class="detail-value">{{ translateRelationType(selectedItem.data.fact_type) || '未知' }}</span>
               </div>
               <div class="detail-row" v-if="selectedItem.data.fact">
-                <span class="detail-label">Fact:</span>
+                <span class="detail-label">事实:</span>
                 <span class="detail-value fact-text">{{ selectedItem.data.fact }}</span>
               </div>
               
               <!-- Episodes -->
               <div class="detail-section" v-if="selectedItem.data.episodes && selectedItem.data.episodes.length > 0">
-                <div class="section-title">Episodes:</div>
+                <div class="section-title">事件:</div>
                 <div class="episodes-list">
                   <span v-for="ep in selectedItem.data.episodes" :key="ep" class="episode-tag">
                     {{ ep }}
@@ -188,12 +201,24 @@
               </div>
               
               <div class="detail-row" v-if="selectedItem.data.created_at">
-                <span class="detail-label">Created:</span>
+                <span class="detail-label">创建时间:</span>
                 <span class="detail-value">{{ formatDateTime(selectedItem.data.created_at) }}</span>
               </div>
+              <div class="detail-row" v-if="selectedItem.data.updated_at">
+                <span class="detail-label">更新时间:</span>
+                <span class="detail-value">{{ formatDateTime(selectedItem.data.updated_at) }}</span>
+              </div>
               <div class="detail-row" v-if="selectedItem.data.valid_at">
-                <span class="detail-label">Valid From:</span>
+                <span class="detail-label">有效起始:</span>
                 <span class="detail-value">{{ formatDateTime(selectedItem.data.valid_at) }}</span>
+              </div>
+              <div class="detail-row" v-if="selectedItem.data.invalid_at">
+                <span class="detail-label">失效时间:</span>
+                <span class="detail-value">{{ formatDateTime(selectedItem.data.invalid_at) }}</span>
+              </div>
+              <div class="detail-row" v-if="selectedItem.data.expired_at">
+                <span class="detail-label">过期时间:</span>
+                <span class="detail-value">{{ formatDateTime(selectedItem.data.expired_at) }}</span>
               </div>
             </template>
           </div>
@@ -209,17 +234,17 @@
       <!-- 等待/空状态 -->
       <div v-else class="graph-state">
         <div class="empty-icon">❖</div>
-        <p class="empty-text">等待本体生成...</p>
+        <p class="empty-text">{{ emptyStateText }}</p>
       </div>
     </div>
 
     <!-- 底部图例 (Bottom Left) -->
     <div v-if="graphData && entityTypes.length" class="graph-legend">
-      <span class="legend-title">Entity Types</span>
+      <span class="legend-title">智能体类型</span>
       <div class="legend-items">
         <div class="legend-item" v-for="type in entityTypes" :key="type.name">
           <span class="legend-dot" :style="{ background: type.color }"></span>
-          <span class="legend-label">{{ type.name }}</span>
+          <span class="legend-label">{{ translateEntityType(type.name) }}</span>
         </div>
       </div>
     </div>
@@ -230,7 +255,7 @@
         <input type="checkbox" v-model="showEdgeLabels" />
         <span class="slider"></span>
       </label>
-      <span class="toggle-label">Show Edge Labels</span>
+      <span class="toggle-label">显示边标签</span>
     </div>
   </div>
 </template>
@@ -238,11 +263,18 @@
 <script setup>
 import { ref, onMounted, onUnmounted, watch, nextTick, computed } from 'vue'
 import * as d3 from 'd3'
+import { translateEntityType, translateRelationType } from '../utils/entityTranslations.js'
+import { formatGraphDateTime, getDisplayAttributes, translateGraphLabel } from '../utils/graphDisplay.js'
+
+const SIMULATION_MEMORY_TYPE = 'FutureSimulationMemory'
+const SIMULATION_MEMORY_COLOR = '#9CA3AF'
+const NODE_DETAIL_NAME_LIMIT = 16
 
 const props = defineProps({
   graphData: Object,
   loading: Boolean,
   currentPhase: Number,
+  status: { type: String, default: '' },
   isSimulating: Boolean
 })
 
@@ -255,6 +287,48 @@ const showEdgeLabels = ref(true) // 默认显示边标签
 const expandedSelfLoops = ref(new Set()) // 展开的自环项
 const showSimulationFinishedHint = ref(false) // 模拟结束后的提示
 const wasSimulating = ref(false) // 追踪之前是否在模拟中
+
+const emptyStateText = computed(() => {
+  if (props.currentPhase === 0) return '正在生成事件...'
+  if (props.status === 'failed') return '图谱构建失败，请检查右侧失败原因。'
+  if (props.currentPhase === 1) return '正在抽取实体并构建图谱...'
+  return '等待事件生成...'
+})
+
+const showGraphActivityHint = computed(() => {
+  return props.isSimulating || (props.currentPhase === 1 && props.status !== 'failed')
+})
+
+const selectedNodeAttributes = computed(() => {
+  if (selectedItem.value?.type !== 'node') return []
+  return getDisplayAttributes(selectedItem.value.data?.attributes)
+})
+
+const normalizeTypeKey = (value = '') => String(value || '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase()
+
+const isSimulationMemoryLabel = (label) => {
+  return normalizeTypeKey(label) === normalizeTypeKey(SIMULATION_MEMORY_TYPE)
+}
+
+const getNodeDisplayLabels = (node = {}) => {
+  return node.display_labels?.length ? node.display_labels : (node.labels || [])
+}
+
+const getNodeDisplayType = (node = {}) => {
+  return node.display_type || node.labels?.find(l => l !== 'Entity') || 'Entity'
+}
+
+const isNewSimulationMemoryNode = (node = {}) => {
+  return Boolean(
+    node.is_new_simulation_memory || isSimulationMemoryLabel(node.display_type)
+  )
+}
+
+const formatNodeDetailName = (name = '') => {
+  const chars = Array.from(String(name || ''))
+  if (chars.length <= NODE_DETAIL_NAME_LIMIT) return chars.join('')
+  return chars.slice(0, NODE_DETAIL_NAME_LIMIT).join('') + '…'
+}
 
 // 关闭模拟结束提示
 const dismissFinishedHint = () => {
@@ -289,9 +363,13 @@ const entityTypes = computed(() => {
   const colors = ['#FF6B35', '#004E89', '#7B2D8E', '#1A936F', '#C5283D', '#E9724C', '#3498db', '#9b59b6', '#27ae60', '#f39c12']
   
   props.graphData.nodes.forEach(node => {
-    const type = node.labels?.find(l => l !== 'Entity') || 'Entity'
+    const type = getNodeDisplayType(node)
     if (!typeMap[type]) {
-      typeMap[type] = { name: type, count: 0, color: colors[Object.keys(typeMap).length % colors.length] }
+      typeMap[type] = {
+        name: type,
+        count: 0,
+        color: isSimulationMemoryLabel(type) ? SIMULATION_MEMORY_COLOR : colors[Object.keys(typeMap).length % colors.length]
+      }
     }
     typeMap[type].count++
   })
@@ -300,20 +378,7 @@ const entityTypes = computed(() => {
 
 // 格式化时间
 const formatDateTime = (dateStr) => {
-  if (!dateStr) return ''
-  try {
-    const date = new Date(dateStr)
-    return date.toLocaleString('en-US', { 
-      month: 'short', 
-      day: 'numeric', 
-      year: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-      hour12: true 
-    })
-  } catch {
-    return dateStr
-  }
+  return formatGraphDateTime(dateStr)
 }
 
 const closeDetailPanel = () => {
@@ -356,7 +421,8 @@ const renderGraph = () => {
   const nodes = nodesData.map(n => ({
     id: n.uuid,
     name: n.name || 'Unnamed',
-    type: n.labels?.find(l => l !== 'Entity') || 'Entity',
+    type: getNodeDisplayType(n),
+    isNewSimulationMemory: isNewSimulationMemoryNode(n),
     rawData: n
   }))
   
@@ -466,7 +532,7 @@ const renderGraph = () => {
   // Color scale
   const colorMap = {}
   entityTypes.value.forEach(t => colorMap[t.name] = t.color)
-  const getColor = (type) => colorMap[type] || '#999'
+  const getColor = (type) => isSimulationMemoryLabel(type) ? SIMULATION_MEMORY_COLOR : (colorMap[type] || '#999')
 
   // Simulation - 根据边数量动态调整节点间距
   const simulation = d3.forceSimulation(nodes)
@@ -619,7 +685,7 @@ const renderGraph = () => {
   const linkLabels = linkGroup.selectAll('text')
     .data(edges)
     .enter().append('text')
-    .text(d => d.name)
+    .text(d => translateRelationType(d.name))
     .attr('font-size', '9px')
     .attr('fill', '#666')
     .attr('text-anchor', 'middle')
@@ -655,7 +721,7 @@ const renderGraph = () => {
     .data(nodes)
     .enter().append('circle')
     .attr('r', 10)
-    .attr('fill', d => getColor(d.type))
+    .attr('fill', d => d.isNewSimulationMemory ? SIMULATION_MEMORY_COLOR : getColor(d.type))
     .attr('stroke', '#fff')
     .attr('stroke-width', 2.5)
     .style('cursor', 'pointer')
@@ -1157,6 +1223,12 @@ input:checked + .slider:before {
   border-radius: 16px;
   font-size: 11px;
   color: #555;
+}
+
+.label-tag.simulation-memory-label {
+  background: #F3F4F6;
+  border-color: #D1D5DB;
+  color: #6B7280;
 }
 
 .episodes-list {

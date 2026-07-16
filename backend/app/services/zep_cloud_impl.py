@@ -5,6 +5,7 @@ Zep Cloud 客户端实现
 保持与原有代码逻辑一致，确保向后兼容。
 """
 
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from zep_cloud.client import Zep
@@ -71,7 +72,13 @@ class ZepCloudClient(ZepClientAdapter):
 
     # ==================== Episode 操作 ====================
 
-    def add_episode(self, graph_id: str, data: str, episode_type: str = "text") -> str:
+    def add_episode(
+        self,
+        graph_id: str,
+        data: str,
+        episode_type: str = "text",
+        reference_time: Optional[datetime] = None,
+    ) -> str:
         """添加单条 episode"""
         result = self.client.graph.add(
             graph_id=graph_id,
@@ -121,7 +128,7 @@ class ZepCloudClient(ZepClientAdapter):
         nodes = self.client.graph.node.get_by_graph_id(graph_id=graph_id)
         return [self._convert_node(node) for node in nodes]
 
-    def get_node(self, node_uuid: str) -> Optional[GraphNode]:
+    def get_node(self, graph_id: str, node_uuid: str) -> Optional[GraphNode]:
         """获取单个节点"""
         try:
             node = self.client.graph.node.get(uuid_=node_uuid)
@@ -129,7 +136,7 @@ class ZepCloudClient(ZepClientAdapter):
         except Exception:
             return None
 
-    def get_node_edges(self, node_uuid: str) -> List[GraphEdge]:
+    def get_node_edges(self, graph_id: str, node_uuid: str) -> List[GraphEdge]:
         """获取节点的所有相关边"""
         try:
             edges = self.client.graph.node.get_entity_edges(node_uuid=node_uuid)

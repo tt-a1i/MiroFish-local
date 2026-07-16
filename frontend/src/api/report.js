@@ -35,11 +35,35 @@ export const getConsoleLog = (reportId, fromLine = 0) => {
 }
 
 /**
+ * 获取已生成章节快照
+ * @param {string} reportId
+ */
+export const getReportSections = (reportId) => {
+  return service.get(`/api/report/${reportId}/sections`)
+}
+
+/**
  * 获取报告详情
  * @param {string} reportId
  */
 export const getReport = (reportId) => {
   return service.get(`/api/report/${reportId}`)
+}
+
+/**
+ * 根据模拟 ID 获取已生成报告
+ * @param {string} simulationId
+ */
+export const getReportBySimulation = (simulationId) => {
+  return service.get(`/api/report/by-simulation/${simulationId}`)
+}
+
+/**
+ * 检查模拟是否已有报告
+ * @param {string} simulationId
+ */
+export const checkReportStatus = (simulationId) => {
+  return service.get(`/api/report/check/${simulationId}`)
 }
 
 /**

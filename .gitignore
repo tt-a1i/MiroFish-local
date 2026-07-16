@@ -44,6 +44,9 @@ htmlcov/
 # Cursor
 .cursor/
 
+# Playwright MCP 本地状态
+.playwright-mcp/
+
 # 文档与测试程序
 mydoc/
 mytest/

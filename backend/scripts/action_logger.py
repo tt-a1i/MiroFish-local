@@ -15,8 +15,21 @@
 import json
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional
+
+
+def utc_now_iso() -> str:
+    """脚本侧轻量 UTC 时间工具，避免依赖 Flask app 包。"""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def calculate_total_rounds(config: Dict[str, Any]) -> int:
+    """根据 time_config 统一计算总轮数。"""
+    time_config = config.get("time_config", {}) if isinstance(config, dict) else {}
+    total_hours = time_config.get("total_simulation_hours", 72)
+    minutes_per_round = time_config.get("minutes_per_round", 60) or 60
+    return max(1, (total_hours * 60) // minutes_per_round)
 
 
 class PlatformActionLogger:
@@ -53,7 +66,7 @@ class PlatformActionLogger:
         """记录一个动作"""
         entry = {
             "round": round_num,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": utc_now_iso(),
             "agent_id": agent_id,
             "agent_name": agent_name,
             "action_type": action_type,
@@ -69,7 +82,7 @@ class PlatformActionLogger:
         """记录轮次开始"""
         entry = {
             "round": round_num,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": utc_now_iso(),
             "event_type": "round_start",
             "simulated_hour": simulated_hour,
         }
@@ -77,13 +90,14 @@ class PlatformActionLogger:
         with open(self.log_path, 'a', encoding='utf-8') as f:
             f.write(json.dumps(entry, ensure_ascii=False) + '\n')
     
-    def log_round_end(self, round_num: int, actions_count: int):
+    def log_round_end(self, round_num: int, actions_count: int, simulated_hours: int):
         """记录轮次结束"""
         entry = {
             "round": round_num,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": utc_now_iso(),
             "event_type": "round_end",
             "actions_count": actions_count,
+            "simulated_hours": simulated_hours,
         }
         
         with open(self.log_path, 'a', encoding='utf-8') as f:
@@ -92,10 +106,10 @@ class PlatformActionLogger:
     def log_simulation_start(self, config: Dict[str, Any]):
         """记录模拟开始"""
         entry = {
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": utc_now_iso(),
             "event_type": "simulation_start",
             "platform": self.platform,
-            "total_rounds": config.get("time_config", {}).get("total_simulation_hours", 72) * 2,
+            "total_rounds": calculate_total_rounds(config),
             "agents_count": len(config.get("agent_configs", [])),
         }
         
@@ -105,7 +119,7 @@ class PlatformActionLogger:
     def log_simulation_end(self, total_rounds: int, total_actions: int):
         """记录模拟结束"""
         entry = {
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": utc_now_iso(),
             "event_type": "simulation_end",
             "platform": self.platform,
             "total_rounds": total_rounds,
@@ -226,7 +240,7 @@ class ActionLogger:
     ):
         entry = {
             "round": round_num,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": utc_now_iso(),
             "platform": platform,
             "agent_id": agent_id,
             "agent_name": agent_name,
@@ -242,7 +256,7 @@ class ActionLogger:
     def log_round_start(self, round_num: int, simulated_hour: int, platform: str):
         entry = {
             "round": round_num,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": utc_now_iso(),
             "platform": platform,
             "event_type": "round_start",
             "simulated_hour": simulated_hour,
@@ -251,13 +265,14 @@ class ActionLogger:
         with open(self.log_path, 'a', encoding='utf-8') as f:
             f.write(json.dumps(entry, ensure_ascii=False) + '\n')
     
-    def log_round_end(self, round_num: int, actions_count: int, platform: str):
+    def log_round_end(self, round_num: int, actions_count: int, simulated_hours: int, platform: str):
         entry = {
             "round": round_num,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": utc_now_iso(),
             "platform": platform,
             "event_type": "round_end",
             "actions_count": actions_count,
+            "simulated_hours": simulated_hours,
         }
         
         with open(self.log_path, 'a', encoding='utf-8') as f:
@@ -265,10 +280,10 @@ class ActionLogger:
     
     def log_simulation_start(self, platform: str, config: Dict[str, Any]):
         entry = {
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": utc_now_iso(),
             "platform": platform,
             "event_type": "simulation_start",
-            "total_rounds": config.get("time_config", {}).get("total_simulation_hours", 72) * 2,
+            "total_rounds": calculate_total_rounds(config),
             "agents_count": len(config.get("agent_configs", [])),
         }
         
@@ -277,7 +292,7 @@ class ActionLogger:
     
     def log_simulation_end(self, platform: str, total_rounds: int, total_actions: int):
         entry = {
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": utc_now_iso(),
             "platform": platform,
             "event_type": "simulation_end",
             "total_rounds": total_rounds,

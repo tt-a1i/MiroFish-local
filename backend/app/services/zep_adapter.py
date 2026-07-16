@@ -7,6 +7,7 @@ MVP 阶段目标：不依赖 Zep Cloud，跑通「建图 → 读实体 → 搜�
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 
@@ -116,7 +117,9 @@ class ZepClientAdapter(ABC):
         """
         设置图谱本体（实体类型、边类型定义）
 
-        MVP 说明：Graphiti 实现可 no-op 或仅记录用于 prompt 提示。
+        当前约定：
+        - Zep Cloud：直接下发到云端图谱
+        - Graphiti：缓存后在 episode ingestion 中注入 entity_types / edge_types / edge_type_map
 
         Args:
             graph_ids: 图谱ID列表
@@ -128,7 +131,13 @@ class ZepClientAdapter(ABC):
     # ==================== Episode 操作 ====================
 
     @abstractmethod
-    def add_episode(self, graph_id: str, data: str, episode_type: str = "text") -> str:
+    def add_episode(
+        self,
+        graph_id: str,
+        data: str,
+        episode_type: str = "text",
+        reference_time: Optional[datetime] = None,
+    ) -> str:
         """
         添加单条 episode 到图谱
 
@@ -212,7 +221,7 @@ class ZepClientAdapter(ABC):
         ...
 
     @abstractmethod
-    def get_node(self, node_uuid: str) -> Optional[GraphNode]:
+    def get_node(self, graph_id: str, node_uuid: str) -> Optional[GraphNode]:
         """
         获取单个节点详情
 
@@ -225,7 +234,7 @@ class ZepClientAdapter(ABC):
         ...
 
     @abstractmethod
-    def get_node_edges(self, node_uuid: str) -> List[GraphEdge]:
+    def get_node_edges(self, graph_id: str, node_uuid: str) -> List[GraphEdge]:
         """
         获取节点的所有相关边
 

@@ -2,7 +2,7 @@
   <div class="process-page">
     <!-- 顶部导航栏 -->
     <nav class="navbar">
-      <div class="nav-brand" @click="goHome">MIROFISH</div>
+      <div class="nav-brand" @click="goHome">传播推演</div>
       
       <!-- 中间步骤指示器 -->
       <div class="nav-center">
@@ -56,9 +56,9 @@
             <!-- 节点/边详情面板 -->
             <div v-if="selectedItem" class="detail-panel">
               <div class="detail-panel-header">
-                <span class="detail-title">{{ selectedItem.type === 'node' ? 'Node Details' : 'Relationship' }}</span>
+                <span class="detail-title">{{ selectedItem.type === 'node' ? '节点详情' : '关系详情' }}</span>
                 <span v-if="selectedItem.type === 'node'" class="detail-badge" :style="{ background: selectedItem.color }">
-                  {{ selectedItem.entityType }}
+                  {{ translateEntityType(selectedItem.entityType) }}
                 </span>
                 <button class="detail-close" @click="closeDetailPanel">×</button>
               </div>
@@ -66,7 +66,7 @@
               <!-- 节点详情 -->
               <div v-if="selectedItem.type === 'node'" class="detail-content">
                 <div class="detail-row">
-                  <span class="detail-label">Name:</span>
+                  <span class="detail-label">名称:</span>
                   <span class="detail-value highlight">{{ selectedItem.data.name }}</span>
                 </div>
                 <div class="detail-row">
@@ -74,32 +74,38 @@
                   <span class="detail-value uuid">{{ selectedItem.data.uuid }}</span>
                 </div>
                 <div class="detail-row" v-if="selectedItem.data.created_at">
-                  <span class="detail-label">Created:</span>
+                  <span class="detail-label">创建时间:</span>
                   <span class="detail-value">{{ formatDate(selectedItem.data.created_at) }}</span>
+                </div>
+                <div class="detail-row" v-if="selectedItem.data.updated_at">
+                  <span class="detail-label">更新时间:</span>
+                  <span class="detail-value">{{ formatDate(selectedItem.data.updated_at) }}</span>
                 </div>
                 
                 <!-- Properties / Attributes -->
-                <div class="detail-section" v-if="selectedItem.data.attributes && Object.keys(selectedItem.data.attributes).length > 0">
-                  <span class="detail-label">Properties:</span>
+                <div class="detail-section" v-if="selectedNodeAttributes.length > 0">
+                  <span class="detail-label">属性:</span>
                   <div class="properties-list">
-                    <div v-for="(value, key) in selectedItem.data.attributes" :key="key" class="property-item">
-                      <span class="property-key">{{ key }}:</span>
-                      <span class="property-value">{{ value }}</span>
+                    <div v-for="property in selectedNodeAttributes" :key="property.key" class="property-item">
+                      <span class="property-key">{{ property.label }}:</span>
+                      <span class="property-value">{{ property.value }}</span>
                     </div>
                   </div>
                 </div>
                 
                 <!-- Summary -->
                 <div class="detail-section" v-if="selectedItem.data.summary">
-                  <span class="detail-label">Summary:</span>
+                  <span class="detail-label">摘要:</span>
                   <p class="detail-summary">{{ selectedItem.data.summary }}</p>
                 </div>
                 
                 <!-- Labels -->
                 <div class="detail-row" v-if="selectedItem.data.labels?.length">
-                  <span class="detail-label">Labels:</span>
+                  <span class="detail-label">标签:</span>
                   <div class="detail-labels">
-                    <span v-for="label in selectedItem.data.labels" :key="label" class="label-tag">{{ label }}</span>
+                    <span v-for="label in selectedItem.data.labels" :key="label" class="label-tag">
+                      {{ translateGraphLabel(label) }}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -110,54 +116,58 @@
                 <div class="edge-relation">
                   <span class="edge-source">{{ selectedItem.data.source_name || selectedItem.data.source_node_name }}</span>
                   <span class="edge-arrow">→</span>
-                  <span class="edge-type">{{ selectedItem.data.name || selectedItem.data.fact_type || 'RELATED_TO' }}</span>
+                  <span class="edge-type">{{ translateRelationType(selectedItem.data.name || selectedItem.data.fact_type) || '关联于' }}</span>
                   <span class="edge-arrow">→</span>
                   <span class="edge-target">{{ selectedItem.data.target_name || selectedItem.data.target_node_name }}</span>
                 </div>
                 
-                <div class="detail-subtitle">Relationship</div>
+                <div class="detail-subtitle">关系</div>
                 
                 <div class="detail-row">
                   <span class="detail-label">UUID:</span>
                   <span class="detail-value uuid">{{ selectedItem.data.uuid }}</span>
                 </div>
                 <div class="detail-row">
-                  <span class="detail-label">Label:</span>
-                  <span class="detail-value">{{ selectedItem.data.name || selectedItem.data.fact_type || 'RELATED_TO' }}</span>
+                  <span class="detail-label">标签:</span>
+                  <span class="detail-value">{{ translateRelationType(selectedItem.data.name || selectedItem.data.fact_type) || '关联于' }}</span>
                 </div>
                 <div class="detail-row" v-if="selectedItem.data.fact_type">
-                  <span class="detail-label">Type:</span>
-                  <span class="detail-value">{{ selectedItem.data.fact_type }}</span>
+                  <span class="detail-label">类型:</span>
+                  <span class="detail-value">{{ translateRelationType(selectedItem.data.fact_type) }}</span>
                 </div>
                 
                 <!-- Fact -->
                 <div class="detail-section" v-if="selectedItem.data.fact">
-                  <span class="detail-label">Fact:</span>
+                  <span class="detail-label">事实:</span>
                   <p class="detail-summary">{{ selectedItem.data.fact }}</p>
                 </div>
                 
                 <!-- Episodes -->
                 <div class="detail-section" v-if="selectedItem.data.episodes?.length">
-                  <span class="detail-label">Episodes:</span>
+                  <span class="detail-label">事件:</span>
                   <div class="episodes-list">
                     <span v-for="ep in selectedItem.data.episodes" :key="ep" class="episode-tag">{{ ep }}</span>
                   </div>
                 </div>
                 
                 <div class="detail-row" v-if="selectedItem.data.created_at">
-                  <span class="detail-label">Created:</span>
+                  <span class="detail-label">创建时间:</span>
                   <span class="detail-value">{{ formatDate(selectedItem.data.created_at) }}</span>
                 </div>
+                <div class="detail-row" v-if="selectedItem.data.updated_at">
+                  <span class="detail-label">更新时间:</span>
+                  <span class="detail-value">{{ formatDate(selectedItem.data.updated_at) }}</span>
+                </div>
                 <div class="detail-row" v-if="selectedItem.data.valid_at">
-                  <span class="detail-label">Valid From:</span>
+                  <span class="detail-label">有效起始:</span>
                   <span class="detail-value">{{ formatDate(selectedItem.data.valid_at) }}</span>
                 </div>
                 <div class="detail-row" v-if="selectedItem.data.invalid_at">
-                  <span class="detail-label">Invalid At:</span>
+                  <span class="detail-label">失效时间:</span>
                   <span class="detail-value">{{ formatDate(selectedItem.data.invalid_at) }}</span>
                 </div>
                 <div class="detail-row" v-if="selectedItem.data.expired_at">
-                  <span class="detail-label">Expired At:</span>
+                  <span class="detail-label">过期时间:</span>
                   <span class="detail-value">{{ formatDate(selectedItem.data.expired_at) }}</span>
                 </div>
               </div>
@@ -215,7 +225,7 @@
         <div v-if="graphData" class="graph-legend">
           <div class="legend-item" v-for="type in entityTypes" :key="type.name">
             <span class="legend-dot" :style="{ background: type.color }"></span>
-            <span class="legend-label">{{ type.name }}</span>
+            <span class="legend-label">{{ translateEntityType(type.name) }}</span>
             <span class="legend-count">{{ type.count }}</span>
           </div>
         </div>
@@ -235,7 +245,7 @@
               <span class="phase-num">01</span>
               <div class="phase-info">
                 <div class="phase-title">本体生成</div>
-                <div class="phase-api">/api/graph/ontology/generate</div>
+                <div class="phase-api" style="display:none">/api/graph/ontology/generate</div>
               </div>
               <span class="phase-status" :class="getPhaseStatusClass(0)">
                 {{ getPhaseStatusText(0) }}
@@ -261,14 +271,14 @@
               
               <!-- 已生成的本体信息 -->
               <div class="detail-section" v-if="projectData?.ontology">
-                <div class="detail-label">生成的实体类型 ({{ projectData.ontology.entity_types?.length || 0 }})</div>
+                <div class="detail-label">生成的智能体类型 ({{ projectData.ontology.entity_types?.length || 0 }})</div>
                 <div class="entity-tags">
                   <span 
                     v-for="entity in projectData.ontology.entity_types" 
                     :key="entity.name"
                     class="entity-tag"
                   >
-                    {{ entity.name }}
+                    {{ translateEntityType(entity.name) }}
                   </span>
                 </div>
               </div>
@@ -281,11 +291,11 @@
                     :key="idx"
                     class="relation-item"
                   >
-                    <span class="rel-source">{{ rel.source_type }}</span>
+                    <span class="rel-source">{{ translateEntityType(rel.source_type) }}</span>
                     <span class="rel-arrow">→</span>
-                    <span class="rel-name">{{ rel.name }}</span>
+                    <span class="rel-name">{{ translateRelationType(rel.name) }}</span>
                     <span class="rel-arrow">→</span>
-                    <span class="rel-target">{{ rel.target_type }}</span>
+                    <span class="rel-target">{{ translateEntityType(rel.target_type) }}</span>
                   </div>
                   <div v-if="(projectData.ontology.relation_types?.length || 0) > 5" class="relation-more">
                     +{{ projectData.ontology.relation_types.length - 5 }} 更多关系...
@@ -306,7 +316,7 @@
               <span class="phase-num">02</span>
               <div class="phase-info">
                 <div class="phase-title">图谱构建</div>
-                <div class="phase-api">/api/graph/build</div>
+                <div class="phase-api" style="display:none">/api/graph/build</div>
               </div>
               <span class="phase-status" :class="getPhaseStatusClass(1)">
                 {{ getPhaseStatusText(1) }}
@@ -343,7 +353,7 @@
                 <div class="build-result">
                   <div class="result-item">
                     <span class="result-value">{{ graphData.node_count }}</span>
-                    <span class="result-label">实体节点</span>
+                    <span class="result-label">智能体节点</span>
                   </div>
                   <div class="result-item">
                     <span class="result-value">{{ graphData.edge_count }}</span>
@@ -351,7 +361,7 @@
                   </div>
                   <div class="result-item">
                     <span class="result-value">{{ entityTypes.length }}</span>
-                    <span class="result-label">实体类型</span>
+                    <span class="result-label">智能体类型</span>
                   </div>
                 </div>
               </div>
@@ -416,6 +426,8 @@ import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { generateOntology, getProject, buildGraph, getTaskStatus, getGraphData } from '../api/graph'
 import { getPendingUpload, clearPendingUpload } from '../store/pendingUpload'
+import { translateEntityType, translateRelationType } from '../utils/entityTranslations.js'
+import { formatGraphDateTime, getDisplayAttributes, translateGraphLabel } from '../utils/graphDisplay.js'
 import * as d3 from 'd3'
 
 const route = useRoute()
@@ -442,6 +454,9 @@ const graphSvg = ref(null)
 
 // 轮询定时器
 let pollTimer = null
+let graphPollCount = 0
+const GRAPH_BUILD_POLL_INTERVAL_MS = 5000
+const GRAPH_BUILD_MAX_POLL_COUNT = 240
 
 // 计算属性
 const statusClass = computed(() => {
@@ -475,6 +490,11 @@ const entityTypes = computed(() => {
   return Object.values(typeMap)
 })
 
+const selectedNodeAttributes = computed(() => {
+  if (selectedItem.value?.type !== 'node') return []
+  return getDisplayAttributes(selectedItem.value.data?.attributes)
+})
+
 // 方法
 const goHome = () => {
   router.push('/')
@@ -500,19 +520,7 @@ const closeDetailPanel = () => {
 
 // 格式化日期
 const formatDate = (dateStr) => {
-  if (!dateStr) return '-'
-  try {
-    const date = new Date(dateStr)
-    return date.toLocaleString('zh-CN', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    })
-  } catch {
-    return dateStr
-  }
+  return formatGraphDateTime(dateStr, '-')
 }
 
 // 选中节点
@@ -691,7 +699,7 @@ const startBuildGraph = async () => {
       // 保存 task_id 用于轮询
       const taskId = response.data.task_id
       
-      // 启动图谱数据轮询（独立于任务状态轮询）
+      // 启动低频图谱数据轮询（独立于任务状态轮询）
       startGraphPolling()
       
       // 启动任务状态轮询
@@ -712,13 +720,18 @@ let graphPollTimer = null
 
 // 启动图谱数据轮询
 const startGraphPolling = () => {
-  // 立即获取一次
-  fetchGraphData()
-  
-  // 每 10 秒自动获取一次图谱数据
+  if (graphPollTimer) return
+  graphPollCount = 0
+
+  // 图谱创建后立即尝试读取，让左侧视图随批次写入逐步刷新。
+  fetchGraphData({ quiet: true })
   graphPollTimer = setInterval(async () => {
-    await fetchGraphData()
-  }, 10000)
+    graphPollCount += 1
+    await fetchGraphData({ quiet: true })
+    if (graphPollCount >= GRAPH_BUILD_MAX_POLL_COUNT) {
+      stopGraphPolling()
+    }
+  }, GRAPH_BUILD_POLL_INTERVAL_MS)
 }
 
 // 手动刷新图谱
@@ -734,10 +747,11 @@ const stopGraphPolling = () => {
     clearInterval(graphPollTimer)
     graphPollTimer = null
   }
+  graphPollCount = 0
 }
 
 // 获取图谱数据
-const fetchGraphData = async () => {
+const fetchGraphData = async (options = {}) => {
   try {
     // 先获取项目信息以获取 graph_id
     const projectResponse = await getProject(currentProjectId.value)
@@ -752,15 +766,20 @@ const fetchGraphData = async () => {
       if (graphResponse.success && graphResponse.data) {
         const newData = graphResponse.data
         const newNodeCount = newData.node_count || newData.nodes?.length || 0
+        const newEdgeCount = newData.edge_count || newData.edges?.length || 0
         const oldNodeCount = graphData.value?.node_count || graphData.value?.nodes?.length || 0
+        const oldEdgeCount = graphData.value?.edge_count || graphData.value?.edges?.length || 0
         
-        console.log('Fetching graph data, nodes:', newNodeCount, 'edges:', newData.edge_count || newData.edges?.length || 0)
+        console.log('Fetching graph data, nodes:', newNodeCount, 'edges:', newEdgeCount)
         
         // 数据有变化时更新渲染
-        if (newNodeCount !== oldNodeCount || !graphData.value) {
+        if (newNodeCount !== oldNodeCount || newEdgeCount !== oldEdgeCount || !graphData.value) {
           graphData.value = newData
           await nextTick()
           renderGraph()
+          if (!options.quiet) {
+            console.log('Graph refreshed manually')
+          }
         }
       }
     }

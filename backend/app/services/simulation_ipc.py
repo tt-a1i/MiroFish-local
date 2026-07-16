@@ -14,10 +14,10 @@ import time
 import uuid
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
-from datetime import datetime
 from enum import Enum
 
 from ..utils.logger import get_logger
+from ..utils.time_utils import utc_now_iso
 
 logger = get_logger('mirofish.simulation_ipc')
 
@@ -43,7 +43,7 @@ class IPCCommand:
     command_id: str
     command_type: CommandType
     args: Dict[str, Any]
-    timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+    timestamp: str = field(default_factory=utc_now_iso)
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -59,7 +59,7 @@ class IPCCommand:
             command_id=data["command_id"],
             command_type=CommandType(data["command_type"]),
             args=data.get("args", {}),
-            timestamp=data.get("timestamp", datetime.now().isoformat())
+            timestamp=data.get("timestamp", utc_now_iso())
         )
 
 
@@ -70,7 +70,7 @@ class IPCResponse:
     status: CommandStatus
     result: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
-    timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+    timestamp: str = field(default_factory=utc_now_iso)
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -88,7 +88,7 @@ class IPCResponse:
             status=CommandStatus(data["status"]),
             result=data.get("result"),
             error=data.get("error"),
-            timestamp=data.get("timestamp", datetime.now().isoformat())
+            timestamp=data.get("timestamp", utc_now_iso())
         )
 
 
@@ -326,7 +326,7 @@ class SimulationIPCServer:
         with open(status_file, 'w', encoding='utf-8') as f:
             json.dump({
                 "status": status,
-                "timestamp": datetime.now().isoformat()
+                "timestamp": utc_now_iso()
             }, f, ensure_ascii=False, indent=2)
     
     def poll_commands(self) -> Optional[IPCCommand]:

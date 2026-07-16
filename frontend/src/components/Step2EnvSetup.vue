@@ -15,29 +15,10 @@
         </div>
         
         <div class="card-content">
-          <p class="api-note">POST /api/simulation/create</p>
+          <p class="api-note" style="display:none">POST /api/simulation/create</p>
           <p class="description">
-            新建simulation实例，拉取模拟世界参数模版
+            新建模拟实例，拉取模拟世界参数模版
           </p>
-
-          <div v-if="simulationId" class="info-card">
-            <div class="info-row">
-              <span class="info-label">Project ID</span>
-              <span class="info-value mono">{{ projectData?.project_id }}</span>
-            </div>
-            <div class="info-row">
-              <span class="info-label">Graph ID</span>
-              <span class="info-value mono">{{ projectData?.graph_id }}</span>
-            </div>
-            <div class="info-row">
-              <span class="info-label">Simulation ID</span>
-              <span class="info-value mono">{{ simulationId }}</span>
-            </div>
-            <div class="info-row">
-              <span class="info-label">Task ID</span>
-              <span class="info-value mono">{{ taskId || '异步任务已完成' }}</span>
-            </div>
-          </div>
         </div>
       </div>
 
@@ -46,7 +27,7 @@
         <div class="card-header">
           <div class="step-info">
             <span class="step-num">02</span>
-            <span class="step-title">生成 Agent 人设</span>
+            <span class="step-title">生成智能体人设</span>
           </div>
           <div class="step-status">
             <span v-if="phase > 1" class="badge success">已完成</span>
@@ -56,31 +37,31 @@
         </div>
 
         <div class="card-content">
-          <p class="api-note">POST /api/simulation/prepare</p>
+          <p class="api-note" style="display:none">POST /api/simulation/prepare</p>
           <p class="description">
-            结合上下文，自动调用工具从知识图谱梳理实体与关系，初始化模拟个体，并基于现实种子赋予他们独特的行为与记忆
+            结合上下文，自动调用工具从知识图谱梳理实体与关系，初始化模拟个体，并基于现实事件赋予他们独特的行为与记忆
           </p>
 
           <!-- Profiles Stats -->
           <div v-if="profiles.length > 0" class="stats-grid">
             <div class="stat-card">
               <span class="stat-value">{{ profiles.length }}</span>
-              <span class="stat-label">当前Agent数</span>
+              <span class="stat-label">当前智能体数</span>
             </div>
             <div class="stat-card">
-              <span class="stat-value">{{ expectedTotal || '-' }}</span>
-              <span class="stat-label">预期Agent总数</span>
+              <span class="stat-value">{{ expectedTotal ?? '-' }}</span>
+              <span class="stat-label">预期智能体总数</span>
             </div>
             <div class="stat-card">
               <span class="stat-value">{{ totalTopicsCount }}</span>
-              <span class="stat-label">现实种子当前关联话题数</span>
+              <span class="stat-label">现实事件当前关联话题数</span>
             </div>
           </div>
 
           <!-- Profiles List Preview -->
           <div v-if="profiles.length > 0" class="profiles-preview">
             <div class="preview-header">
-              <span class="preview-title">已生成的 Agent 人设</span>
+              <span class="preview-title">已生成的智能体人设</span>
             </div>
             <div class="profiles-list">
               <div 
@@ -90,13 +71,13 @@
                 @click="selectProfile(profile)"
               >
                 <div class="profile-header">
-                  <span class="profile-realname">{{ profile.username || 'Unknown' }}</span>
-                  <span class="profile-username">@{{ profile.name || `agent_${idx}` }}</span>
+                  <span class="profile-realname">{{ profile.name || '未知' }}</span>
+                  <span class="profile-username">@{{ profile.username || `agent_${idx}` }}</span>
                 </div>
                 <div class="profile-meta">
                   <span class="profile-profession">{{ profile.profession || '未知职业' }}</span>
                 </div>
-                <p class="profile-bio">{{ profile.bio || '暂无简介' }}</p>
+                <p class="profile-bio">{{ cleanDisplayText(profile.bio) || '暂无简介' }}</p>
                 <div v-if="profile.interested_topics?.length" class="profile-topics">
                   <span 
                     v-for="topic in profile.interested_topics.slice(0, 3)" 
@@ -128,9 +109,9 @@
         </div>
 
         <div class="card-content">
-          <p class="api-note">POST /api/simulation/prepare</p>
+          <p class="api-note" style="display:none">POST /api/simulation/prepare</p>
           <p class="description">
-            LLM 根据模拟需求与现实种子，智能设置世界时间流速、推荐算法、每个个体的活跃时间段、发言频率、事件触发等参数
+            LLM 根据模拟需求与现实事件，智能设置世界时间流速、推荐算法、每个个体的活跃时间段、发言频率、事件触发等参数
           </p>
           
           <!-- Config Preview -->
@@ -182,7 +163,7 @@
             <!-- Agent 配置 -->
             <div class="config-block">
               <div class="config-block-header">
-                <span class="config-block-title">Agent 配置</span>
+                <span class="config-block-title">智能体配置</span>
                 <span class="config-block-badge">{{ simulationConfig.agent_configs?.length || 0 }} 个</span>
               </div>
               <div class="agents-cards">
@@ -194,12 +175,12 @@
                   <!-- 卡片头部 -->
                   <div class="agent-card-header">
                     <div class="agent-identity">
-                      <span class="agent-id">Agent {{ agent.agent_id }}</span>
+                      <span class="agent-id">智能体 {{ agent.agent_id }}</span>
                       <span class="agent-name">{{ agent.entity_name }}</span>
                     </div>
                     <div class="agent-tags">
-                      <span class="agent-type">{{ agent.entity_type }}</span>
-                      <span class="agent-stance" :class="'stance-' + agent.stance">{{ agent.stance }}</span>
+                      <span class="agent-type">{{ translateEntityType(agent.entity_type) }}</span>
+                      <span class="agent-stance" :class="'stance-' + agent.stance">{{ translateStance(agent.stance) }}</span>
                     </div>
                   </div>
                   
@@ -287,14 +268,6 @@
                       <span class="param-label">相关性权重</span>
                       <span class="param-value">{{ simulationConfig.twitter_config.relevance_weight }}</span>
                     </div>
-                    <div class="param-row">
-                      <span class="param-label">病毒阈值</span>
-                      <span class="param-value">{{ simulationConfig.twitter_config.viral_threshold }}</span>
-                    </div>
-                    <div class="param-row">
-                      <span class="param-label">回音室强度</span>
-                      <span class="param-value">{{ simulationConfig.twitter_config.echo_chamber_strength }}</span>
-                    </div>
                   </div>
                 </div>
                 <div v-if="simulationConfig.reddit_config" class="platform-card">
@@ -313,14 +286,6 @@
                     <div class="param-row">
                       <span class="param-label">相关性权重</span>
                       <span class="param-value">{{ simulationConfig.reddit_config.relevance_weight }}</span>
-                    </div>
-                    <div class="param-row">
-                      <span class="param-label">病毒阈值</span>
-                      <span class="param-value">{{ simulationConfig.reddit_config.viral_threshold }}</span>
-                    </div>
-                    <div class="param-row">
-                      <span class="param-label">回音室强度</span>
-                      <span class="param-value">{{ simulationConfig.reddit_config.echo_chamber_strength }}</span>
                     </div>
                   </div>
                 </div>
@@ -361,7 +326,7 @@
         </div>
 
         <div class="card-content">
-          <p class="api-note">POST /api/simulation/prepare</p>
+          <p class="api-note" style="display:none">POST /api/simulation/prepare</p>
           <p class="description">
             基于叙事方向，自动生成初始激活事件与热点话题，引导模拟世界的初始状态
           </p>
@@ -403,9 +368,9 @@
                   <div class="timeline-marker"></div>
                   <div class="timeline-content">
                     <div class="post-header">
-                      <span class="post-role">{{ post.poster_type }}</span>
+                      <span class="post-role">{{ translateEntityType(post.poster_type) }}</span>
                       <span class="post-agent-info">
-                        <span class="post-id">Agent {{ post.poster_agent_id }}</span>
+                        <span class="post-id">智能体 {{ post.poster_agent_id }}</span>
                         <span class="post-username">@{{ getAgentUsername(post.poster_agent_id) }}</span>
                       </span>
                     </div>
@@ -432,7 +397,7 @@
         </div>
 
         <div class="card-content">
-          <p class="api-note">POST /api/simulation/start</p>
+          <p class="api-note" style="display:none">POST /api/simulation/start</p>
           <p class="description">模拟环境已准备完成，可以开始运行模拟</p>
           
           <!-- 模拟轮数配置 - 只有在配置生成完成且轮数计算出来后才显示 -->
@@ -440,7 +405,7 @@
             <div class="rounds-header">
               <div class="header-left">
                 <span class="section-title">模拟轮数设定</span>
-                <span class="section-desc">MiroFish 自动规划推演现实 <span class="desc-highlight">{{ simulationConfig?.time_config?.total_simulation_hours || '-' }}</span> 小时，每轮代表现实 <span class="desc-highlight">{{ simulationConfig?.time_config?.minutes_per_round || '-' }}</span> 分钟时间流逝</span>
+                <span class="section-desc">传播推演 自动规划推演现实 <span class="desc-highlight">{{ simulationConfig?.time_config?.total_simulation_hours || '-' }}</span> 小时，每轮代表现实 <span class="desc-highlight">{{ roundDurationText }}</span></span>
               </div>
               <label class="switch-control">
                 <input type="checkbox" v-model="useCustomRounds">
@@ -457,7 +422,7 @@
                     <span class="val-unit">轮</span>
                   </div>
                   <div class="slider-meta-info">
-                    <span>若Agent规模为100：预计耗时约 {{ Math.round(customMaxRounds * 0.6) }} 分钟</span>
+                    <span>若智能体规模为100：预计耗时约 {{ Math.round(customMaxRounds * 0.6) }} 分钟</span>
                   </div>
                 </div>
 
@@ -465,21 +430,21 @@
                   <input 
                     type="range" 
                     v-model.number="customMaxRounds" 
-                    min="10" 
-                    :max="autoGeneratedRounds"
-                    step="5"
+                    :min="SIMULATION_ROUND_LIMITS.min"
+                    :max="SIMULATION_ROUND_LIMITS.max"
+                    :step="SIMULATION_ROUND_LIMITS.step"
                     class="minimal-slider"
-                    :style="{ '--percent': ((customMaxRounds - 10) / (autoGeneratedRounds - 10)) * 100 + '%' }"
+                    :style="{ '--percent': calculateSliderPercent(customMaxRounds) + '%' }"
                   />
                   <div class="range-marks">
-                    <span>10</span>
+                    <span>{{ SIMULATION_ROUND_LIMITS.min }}</span>
                     <span 
                       class="mark-recommend" 
-                      :class="{ active: customMaxRounds === 40 }"
-                      @click="customMaxRounds = 40"
-                      :style="{ position: 'absolute', left: `calc(${(40 - 10) / (autoGeneratedRounds - 10) * 100}% - 30px)` }"
-                    >40 (推荐)</span>
-                    <span>{{ autoGeneratedRounds }}</span>
+                      :class="{ active: customMaxRounds === SIMULATION_ROUND_LIMITS.recommended }"
+                      @click="customMaxRounds = SIMULATION_ROUND_LIMITS.recommended"
+                      :style="{ position: 'absolute', left: `calc(${calculateSliderPercent(SIMULATION_ROUND_LIMITS.recommended)}% - 30px)` }"
+                    >{{ SIMULATION_ROUND_LIMITS.recommended }} (推荐)</span>
+                    <span>{{ SIMULATION_ROUND_LIMITS.max }}</span>
                   </div>
                 </div>
               </div>
@@ -487,7 +452,7 @@
               <div v-else class="rounds-content auto" key="auto">
                 <div class="auto-info-card">
                   <div class="auto-value">
-                    <span class="val-num">{{ autoGeneratedRounds }}</span>
+                    <span class="val-num">{{ defaultRecommendedRounds }}</span>
                     <span class="val-unit">轮</span>
                   </div>
                   <div class="auto-content">
@@ -497,11 +462,11 @@
                           <circle cx="12" cy="12" r="10"></circle>
                           <polyline points="12 6 12 12 16 14"></polyline>
                         </svg>
-                        若Agent规模为100：预计耗时 {{ Math.round(autoGeneratedRounds * 0.6) }} 分钟
+                        若智能体规模为100：预计耗时 {{ Math.round(defaultRecommendedRounds * 0.6) }} 分钟
                       </span>
                     </div>
                     <div class="auto-desc">
-                      <p class="highlight-tip" @click="useCustomRounds = true">若首次运行，强烈建议切换至‘自定义模式’减少模拟轮数，以便快速预览效果并降低报错风险 ➝</p>
+                      <p class="highlight-tip" @click="useCustomRounds = true">默认推荐运行 24 轮（1 天），可切换至‘自定义模式’选择 8-72 轮 ➝</p>
                     </div>
                   </div>
                 </div>
@@ -535,8 +500,9 @@
           <div class="modal-header">
           <div class="modal-header-info">
             <div class="modal-name-row">
-              <span class="modal-realname">{{ selectedProfile.username }}</span>
-              <span class="modal-username">@{{ selectedProfile.name }}</span>
+              <span class="modal-realname">{{ selectedProfile.name }}</span>
+              <span class="modal-username">@{{ selectedProfile.username }}</span>
+              <span v-if="selectedProfile.country" class="modal-country">{{ selectedProfile.country }}</span>
             </div>
             <span class="modal-profession">{{ selectedProfile.profession }}</span>
           </div>
@@ -544,35 +510,9 @@
         </div>
         
         <div class="modal-body">
-          <!-- 基本信息 -->
-          <div class="modal-info-grid">
-            <div class="info-item">
-              <span class="info-label">事件外显年龄</span>
-              <span class="info-value">{{ selectedProfile.age || '-' }} 岁</span>
-            </div>
-            <div class="info-item">
-              <span class="info-label">事件外显性别</span>
-              <span class="info-value">{{ { male: '男', female: '女', other: '其他' }[selectedProfile.gender] || selectedProfile.gender }}</span>
-            </div>
-            <div class="info-item">
-              <span class="info-label">国家/地区</span>
-              <span class="info-value">{{ selectedProfile.country || '-' }}</span>
-            </div>
-            <div class="info-item">
-              <span class="info-label">事件外显MBTI</span>
-              <span class="info-value mbti">{{ selectedProfile.mbti || '-' }}</span>
-            </div>
-          </div>
-
-          <!-- 简介 -->
-          <div class="modal-section">
-            <span class="section-label">人设简介</span>
-            <p class="section-bio">{{ selectedProfile.bio || '暂无简介' }}</p>
-          </div>
-
           <!-- 关注话题 -->
           <div class="modal-section" v-if="selectedProfile.interested_topics?.length">
-            <span class="section-label">现实种子关联话题</span>
+            <span class="section-label">现实事件关联话题</span>
             <div class="topics-grid">
               <span 
                 v-for="topic in selectedProfile.interested_topics" 
@@ -583,31 +523,11 @@
           </div>
 
           <!-- 详细人设 -->
-          <div class="modal-section" v-if="selectedProfile.persona">
+          <div class="modal-section" v-if="selectedProfilePersona">
             <span class="section-label">详细人设背景</span>
-            
-            <!-- 人设维度概览 -->
-            <div class="persona-dimensions">
-              <div class="dimension-card">
-                <span class="dim-title">事件全景经历</span>
-                <span class="dim-desc">在此事件中的完整行为轨迹</span>
-              </div>
-              <div class="dimension-card">
-                <span class="dim-title">行为模式侧写</span>
-                <span class="dim-desc">经验总结与行事风格偏好</span>
-              </div>
-              <div class="dimension-card">
-                <span class="dim-title">独特记忆印记</span>
-                <span class="dim-desc">基于现实种子形成的记忆</span>
-              </div>
-              <div class="dimension-card">
-                <span class="dim-title">社会关系网络</span>
-                <span class="dim-desc">个体链接与交互图谱</span>
-              </div>
-            </div>
 
             <div class="persona-content">
-              <p class="section-persona">{{ selectedProfile.persona }}</p>
+              <p class="section-persona">{{ selectedProfilePersona }}</p>
             </div>
           </div>
         </div>
@@ -616,10 +536,10 @@
     </Transition>
 
     <!-- Bottom Info / Logs -->
-    <div class="system-logs">
+    <div v-if="false" class="system-logs">
       <div class="log-header">
-        <span class="log-title">SYSTEM DASHBOARD</span>
-        <span class="log-id">{{ simulationId || 'NO_SIMULATION' }}</span>
+        <span class="log-title">系统仪表盘</span>
+        <span class="log-id">{{ simulationId || '无模拟实例' }}</span>
       </div>
       <div class="log-content" ref="logContent">
         <div class="log-line" v-for="(log, idx) in systemLogs" :key="idx">
@@ -632,14 +552,22 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, watch, onUnmounted, nextTick } from 'vue'
 import { 
+  createSimulation,
   prepareSimulation, 
   getPrepareStatus, 
   getSimulationProfilesRealtime,
-  getSimulationConfig,
   getSimulationConfigRealtime 
 } from '../api/simulation'
+import { translateEntityType, translateRelationType } from '../utils/entityTranslations.js'
+import {
+  SIMULATION_ROUND_LIMITS,
+  calculateAutoGeneratedRounds,
+  calculateSliderPercent,
+  getDefaultRecommendedRounds,
+  normalizeCustomRounds
+} from '../utils/simulationRounds.js'
 
 const props = defineProps({
   simulationId: String,  // 从父组件传入
@@ -648,7 +576,7 @@ const props = defineProps({
   systemLogs: Array
 })
 
-const emit = defineEmits(['go-back', 'next-step', 'add-log', 'update-status'])
+const emit = defineEmits(['go-back', 'next-step', 'add-log', 'update-status', 'simulation-created'])
 
 // State
 const phase = ref(0) // 0: 初始化, 1: 生成人设, 2: 生成配置, 3: 完成
@@ -662,6 +590,9 @@ const expectedTotal = ref(null)
 const simulationConfig = ref(null)
 const selectedProfile = ref(null)
 const showProfilesDetail = ref(true)
+const localSimulationId = ref('')
+const prepareStarted = ref(false)
+const creatingSimulation = ref(false)
 
 // 日志去重：记录上一次输出的关键信息
 let lastLoggedMessage = ''
@@ -670,11 +601,22 @@ let lastLoggedConfigStage = ''
 
 // 模拟轮数配置
 const useCustomRounds = ref(false) // 默认使用自动配置轮数
-const customMaxRounds = ref(40)   // 默认推荐40轮
+const customMaxRounds = ref(SIMULATION_ROUND_LIMITS.recommended)   // 默认推荐24轮（1天）
+const defaultRecommendedRounds = computed(() => getDefaultRecommendedRounds())
+
+const pickExpectedAgentTotal = (data = {}) => {
+  const value = data.expected_agents_count ?? data.expected_entities_count ?? data.total_expected
+  if (value === null || value === undefined || value === '') {
+    return null
+  }
+
+  const count = Number(value)
+  return Number.isFinite(count) ? count : null
+}
 
 // Watch stage to update phase
 watch(currentStage, (newStage) => {
-  if (newStage === '生成Agent人设' || newStage === 'generating_profiles') {
+  if (newStage === '生成智能体人设' || newStage === 'generating_profiles') {
     phase.value = 1
   } else if (newStage === '生成模拟配置' || newStage === 'generating_config') {
     phase.value = 2
@@ -688,25 +630,28 @@ watch(currentStage, (newStage) => {
   }
 })
 
-// 从配置中计算自动生成的轮数（不使用硬编码默认值）
+// 从配置中计算自动生成的轮数，并钳制到产品允许上限
 const autoGeneratedRounds = computed(() => {
-  if (!simulationConfig.value?.time_config) {
-    return null // 配置未生成时返回 null
+  return calculateAutoGeneratedRounds(simulationConfig.value?.time_config)
+})
+
+const roundDurationText = computed(() => {
+  const minutesPerRound = Number(simulationConfig.value?.time_config?.minutes_per_round)
+  if (!Number.isFinite(minutesPerRound) || minutesPerRound <= 0) {
+    return '-'
   }
-  const totalHours = simulationConfig.value.time_config.total_simulation_hours
-  const minutesPerRound = simulationConfig.value.time_config.minutes_per_round
-  if (!totalHours || !minutesPerRound) {
-    return null // 配置数据不完整时返回 null
+  if (minutesPerRound % 60 === 0) {
+    return `${minutesPerRound / 60} 个小时`
   }
-  const calculatedRounds = Math.floor((totalHours * 60) / minutesPerRound)
-  // 确保最大轮数不小于40（推荐值），避免滑动条范围异常
-  return Math.max(calculatedRounds, 40)
+  return `${minutesPerRound} 分钟`
 })
 
 // Polling timer
 let pollTimer = null
 let profilesTimer = null
 let configTimer = null
+
+const activeSimulationId = computed(() => props.simulationId || localSimulationId.value)
 
 // Computed
 const displayProfiles = computed(() => {
@@ -725,12 +670,40 @@ const getAgentUsername = (agentId) => {
   return `agent_${agentId}`
 }
 
+// 立场英文到中文翻译映射
+const stanceTranslations = {
+  'supportive': '支持者',
+  'opposing': '反对者',
+  'neutral': '中立者',
+  'observer': '观察者'
+}
+
+const translateStance = (stance) => {
+  if (!stance) return '未知'
+  const lower = stance.toLowerCase()
+  return stanceTranslations[lower] || stance
+}
+
 // 计算所有人设的关联话题总数
 const totalTopicsCount = computed(() => {
   return profiles.value.reduce((sum, p) => {
     return sum + (p.interested_topics?.length || 0)
   }, 0)
 })
+
+const cleanDisplayText = (text) => {
+  if (!text) return ''
+
+  return String(text)
+    .replace(/\s*资料来源[：:][\s\S]*$/u, '')
+    .replace(/https?:\/\/[^\s<>"'，。；、）)】\]]+/gu, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim()
+}
+
+const selectedProfilePersona = computed(() => cleanDisplayText(selectedProfile.value?.persona))
 
 // Methods
 const addLog = (msg) => {
@@ -744,21 +717,16 @@ const handleStartSimulation = () => {
   
   if (useCustomRounds.value) {
     // 用户自定义轮数，传递 max_rounds 参数
+    customMaxRounds.value = normalizeCustomRounds(customMaxRounds.value)
     params.maxRounds = customMaxRounds.value
     addLog(`开始模拟，自定义轮数: ${customMaxRounds.value} 轮`)
   } else {
-    // 用户选择保持自动生成的轮数，不传递 max_rounds 参数
-    addLog(`开始模拟，使用自动配置轮数: ${autoGeneratedRounds.value} 轮`)
+    // 默认使用推荐轮数，避免首次运行直接跑满72轮
+    params.maxRounds = defaultRecommendedRounds.value
+    addLog(`开始模拟，使用默认推荐轮数: ${defaultRecommendedRounds.value} 轮`)
   }
   
   emit('next-step', params)
-}
-
-const truncateBio = (bio) => {
-  if (bio.length > 80) {
-    return bio.substring(0, 80) + '...'
-  }
-  return bio
 }
 
 const selectProfile = (profile) => {
@@ -766,24 +734,84 @@ const selectProfile = (profile) => {
 }
 
 // 自动开始准备模拟
+const ensureSimulationId = async () => {
+  if (activeSimulationId.value) {
+    return activeSimulationId.value
+  }
+
+  const projectId = props.projectData?.project_id
+  const graphId = props.projectData?.graph_id
+
+  if (!projectId || !graphId) {
+    return ''
+  }
+
+  if (creatingSimulation.value) {
+    return ''
+  }
+
+  creatingSimulation.value = true
+  addLog('正在创建模拟实例...')
+  emit('update-status', 'processing')
+
+  try {
+    const res = await createSimulation({
+      project_id: projectId,
+      graph_id: graphId,
+      enable_twitter: true,
+      enable_reddit: true
+    })
+
+    if (!res.success || !res.data?.simulation_id) {
+      throw new Error(res.error || '创建模拟实例失败')
+    }
+
+    localSimulationId.value = res.data.simulation_id
+    emit('simulation-created', localSimulationId.value)
+    addLog(`模拟实例创建完成: ${localSimulationId.value}`)
+    return localSimulationId.value
+  } finally {
+    creatingSimulation.value = false
+  }
+}
+
 const startPrepareSimulation = async () => {
-  if (!props.simulationId) {
-    addLog('错误：缺少 simulationId')
+  let simulationId = ''
+  try {
+    simulationId = await ensureSimulationId()
+  } catch (err) {
+    addLog(`创建模拟实例失败: ${err.message}`)
+    emit('update-status', 'error')
+    prepareStarted.value = false
+    return
+  }
+
+  if (!simulationId) {
+    addLog('等待模拟实例创建所需的 project_id 和 graph_id')
     emit('update-status', 'error')
     return
   }
+
+  if (prepareStarted.value) {
+    return
+  }
+  prepareStarted.value = true
   
   // 标记第一步完成，开始第二步
   phase.value = 1
-  addLog(`模拟实例已创建: ${props.simulationId}`)
+  addLog(`模拟实例已创建: ${simulationId}`)
   addLog('正在准备模拟环境...')
   emit('update-status', 'processing')
   
   try {
     const res = await prepareSimulation({
-      simulation_id: props.simulationId,
+      simulation_id: simulationId,
       use_llm_for_profiles: true,
-      parallel_profile_count: 5
+      parallel_profile_count: 5,
+      use_real_profiles: true,
+      strict_real_mode: false,
+      allow_group_agents: true,
+      min_source_count: 1
     })
     
     if (res.success && res.data) {
@@ -798,11 +826,12 @@ const startPrepareSimulation = async () => {
       addLog(`  └─ Task ID: ${res.data.task_id}`)
       
       // 立即设置预期Agent总数（从prepare接口返回值获取）
-      if (res.data.expected_entities_count) {
-        expectedTotal.value = res.data.expected_entities_count
-        addLog(`从Zep图谱读取到 ${res.data.expected_entities_count} 个实体`)
+      const preparedExpectedTotal = pickExpectedAgentTotal(res.data)
+      if (preparedExpectedTotal !== null) {
+        expectedTotal.value = preparedExpectedTotal
+        addLog(`从Zep图谱读取到 ${preparedExpectedTotal} 个实体`)
         if (res.data.entity_types && res.data.entity_types.length > 0) {
-          addLog(`  └─ 实体类型: ${res.data.entity_types.join(', ')}`)
+          addLog(`  └─ 实体类型: ${res.data.entity_types.map(t => translateEntityType(t)).join(', ')}`)
         }
       }
       
@@ -814,10 +843,12 @@ const startPrepareSimulation = async () => {
     } else {
       addLog(`准备失败: ${res.error || '未知错误'}`)
       emit('update-status', 'error')
+      prepareStarted.value = false
     }
   } catch (err) {
     addLog(`准备异常: ${err.message}`)
     emit('update-status', 'error')
+    prepareStarted.value = false
   }
 }
 
@@ -844,12 +875,12 @@ const stopProfilesPolling = () => {
 }
 
 const pollPrepareStatus = async () => {
-  if (!taskId.value && !props.simulationId) return
+  if (!taskId.value && !activeSimulationId.value) return
   
   try {
     const res = await getPrepareStatus({
       task_id: taskId.value,
-      simulation_id: props.simulationId
+      simulation_id: activeSimulationId.value
     })
     
     if (res.success && res.data) {
@@ -906,15 +937,18 @@ const pollPrepareStatus = async () => {
 }
 
 const fetchProfilesRealtime = async () => {
-  if (!props.simulationId) return
+  if (!activeSimulationId.value) return
   
   try {
-    const res = await getSimulationProfilesRealtime(props.simulationId, 'reddit')
+    const res = await getSimulationProfilesRealtime(activeSimulationId.value, 'reddit')
     
     if (res.success && res.data) {
       const prevCount = profiles.value.length
       profiles.value = res.data.profiles || []
-      expectedTotal.value = res.data.total_expected
+      const realtimeExpectedTotal = pickExpectedAgentTotal(res.data)
+      if (realtimeExpectedTotal !== null) {
+        expectedTotal.value = realtimeExpectedTotal
+      }
       
       // 提取实体类型
       const types = new Set()
@@ -931,13 +965,13 @@ const fetchProfilesRealtime = async () => {
         const latestProfile = profiles.value[currentCount - 1]
         const profileName = latestProfile?.name || latestProfile?.username || `Agent_${currentCount}`
         if (currentCount === 1) {
-          addLog(`开始生成Agent人设...`)
+          addLog(`开始生成智能体人设...`)
         }
-        addLog(`→ Agent人设 ${currentCount}/${total}: ${profileName} (${latestProfile?.profession || '未知职业'})`)
+        addLog(`→ 智能体人设 ${currentCount}/${total}: ${profileName} (${latestProfile?.profession || '未知职业'})`)
         
         // 如果全部生成完成
         if (expectedTotal.value && currentCount >= expectedTotal.value) {
-          addLog(`✓ 全部 ${currentCount} 个Agent人设生成完成`)
+          addLog(`✓ 全部 ${currentCount} 个智能体人设生成完成`)
         }
       }
     }
@@ -959,10 +993,10 @@ const stopConfigPolling = () => {
 }
 
 const fetchConfigRealtime = async () => {
-  if (!props.simulationId) return
+  if (!activeSimulationId.value) return
   
   try {
-    const res = await getSimulationConfigRealtime(props.simulationId)
+    const res = await getSimulationConfigRealtime(activeSimulationId.value)
     
     if (res.success && res.data) {
       const data = res.data
@@ -971,7 +1005,7 @@ const fetchConfigRealtime = async () => {
       if (data.generation_stage && data.generation_stage !== lastLoggedConfigStage) {
         lastLoggedConfigStage = data.generation_stage
         if (data.generation_stage === 'generating_profiles') {
-          addLog('正在生成Agent人设配置...')
+          addLog('正在生成智能体人设配置...')
         } else if (data.generation_stage === 'generating_config') {
           addLog('正在调用LLM生成模拟配置参数...')
         }
@@ -984,7 +1018,7 @@ const fetchConfigRealtime = async () => {
         
         // 显示详细配置摘要
         if (data.summary) {
-          addLog(`  ├─ Agent数量: ${data.summary.total_agents}个`)
+          addLog(`  ├─ 智能体数量: ${data.summary.total_agents}个`)
           addLog(`  ├─ 模拟时长: ${data.summary.simulation_hours}小时`)
           addLog(`  ├─ 初始帖子: ${data.summary.initial_posts_count}条`)
           addLog(`  ├─ 热点话题: ${data.summary.hot_topics_count}个`)
@@ -1020,11 +1054,11 @@ const loadPreparedData = async () => {
 
   // 最后获取一次 Profiles
   await fetchProfilesRealtime()
-  addLog(`已加载 ${profiles.value.length} 个Agent人设`)
+  addLog(`已加载 ${profiles.value.length} 个智能体人设`)
 
   // 获取配置（使用实时接口）
   try {
-    const res = await getSimulationConfigRealtime(props.simulationId)
+    const res = await getSimulationConfigRealtime(activeSimulationId.value)
     if (res.success && res.data) {
       if (res.data.config_generated && res.data.config) {
         simulationConfig.value = res.data.config
@@ -1032,7 +1066,7 @@ const loadPreparedData = async () => {
         
         // 显示详细配置摘要
         if (res.data.summary) {
-          addLog(`  ├─ Agent数量: ${res.data.summary.total_agents}个`)
+          addLog(`  ├─ 智能体数量: ${res.data.summary.total_agents}个`)
           addLog(`  ├─ 模拟时长: ${res.data.summary.simulation_hours}小时`)
           addLog(`  └─ 初始帖子: ${res.data.summary.initial_posts_count}条`)
         }
@@ -1043,7 +1077,9 @@ const loadPreparedData = async () => {
       } else {
         // 配置尚未生成，开始轮询
         addLog('配置生成中，开始轮询等待...')
-        startConfigPolling()
+        if (!configTimer) {
+          startConfigPolling()
+        }
       }
     }
   } catch (err) {
@@ -1062,13 +1098,12 @@ watch(() => props.systemLogs?.length, () => {
   })
 })
 
-onMounted(() => {
-  // 自动开始准备流程
-  if (props.simulationId) {
+watch(() => [props.simulationId, props.projectData?.project_id, props.projectData?.graph_id], ([simulationId, projectId, graphId]) => {
+  if ((simulationId || (projectId && graphId)) && !prepareStarted.value) {
     addLog('Step2 环境搭建初始化')
     startPrepareSimulation()
   }
-})
+}, { immediate: true })
 
 onUnmounted(() => {
   stopPolling()
@@ -1388,10 +1423,8 @@ onUnmounted(() => {
   color: #444;
   line-height: 1.6;
   margin: 0 0 10px 0;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .profile-topics {
@@ -1862,6 +1895,15 @@ onUnmounted(() => {
   color: #999;
 }
 
+.modal-country {
+  font-size: 12px;
+  color: #666;
+  background: #F5F5F5;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-weight: 500;
+}
+
 .modal-profession {
   font-size: 12px;
   color: #666;
@@ -1981,42 +2023,6 @@ onUnmounted(() => {
 .topic-item:hover {
   background: #BBDEFB;
   color: #0D47A1;
-}
-
-/* 详细人设 */
-.persona-dimensions {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 12px;
-  margin-bottom: 16px;
-}
-
-.dimension-card {
-  background: #F8F9FA;
-  padding: 12px;
-  border-radius: 6px;
-  border-left: 3px solid #DDD;
-  transition: all 0.2s;
-}
-
-.dimension-card:hover {
-  background: #F0F0F0;
-  border-left-color: #999;
-}
-
-.dim-title {
-  display: block;
-  font-size: 12px;
-  font-weight: 700;
-  color: #333;
-  margin-bottom: 4px;
-}
-
-.dim-desc {
-  display: block;
-  font-size: 10px;
-  color: #888;
-  line-height: 1.4;
 }
 
 .persona-content {

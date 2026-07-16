@@ -8,8 +8,7 @@
           <!-- Report Header -->
           <div class="report-header-block">
             <div class="report-meta">
-              <span class="report-tag">Prediction Report</span>
-              <span class="report-id">ID: {{ reportId || 'REF-2024-X92' }}</span>
+              <span class="report-tag">{{ reportTimeLabel }}</span>
             </div>
             <h1 class="main-title">{{ reportOutline.title }}</h1>
             <p class="sub-title">{{ reportOutline.summary }}</p>
@@ -71,7 +70,7 @@
             <div class="waiting-ring"></div>
             <div class="waiting-ring"></div>
           </div>
-          <span class="waiting-text">Waiting for Report Agent...</span>
+          <span class="waiting-text">等待报告生成智能体...</span>
         </div>
       </div>
 
@@ -84,8 +83,8 @@
             <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
           </svg>
           <div class="action-bar-text">
-            <span class="action-bar-title">Interactive Tools</span>
-            <span class="action-bar-subtitle mono">{{ profiles.length }} agents available</span>
+            <span class="action-bar-title">交互工具</span>
+            <span class="action-bar-subtitle mono">{{ profiles.length }} 个可用智能体</span>
           </div>
         </div>
           <div class="action-bar-tabs">
@@ -97,7 +96,7 @@
               <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
               </svg>
-              <span>与Report Agent对话</span>
+              <span>与报告智能体对话</span>
             </button>
             <div class="agent-dropdown" v-if="profiles.length > 0">
               <button 
@@ -109,7 +108,7 @@
                   <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
                   <circle cx="12" cy="7" r="4"></circle>
                 </svg>
-                <span>{{ selectedAgent ? selectedAgent.username : '与世界中任意个体对话' }}</span>
+                <span>{{ selectedAgent ? getAgentDisplayName(selectedAgent) : '与世界中任意个体对话' }}</span>
                 <svg class="dropdown-arrow" :class="{ open: showAgentDropdown }" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2">
                   <polyline points="6 9 12 15 18 9"></polyline>
                 </svg>
@@ -122,9 +121,9 @@
                   class="dropdown-item"
                   @click="selectAgent(agent, idx)"
                 >
-                  <div class="agent-avatar">{{ (agent.username || 'A')[0] }}</div>
+                  <div class="agent-avatar">{{ getAgentInitial(agent) }}</div>
                   <div class="agent-info">
-                    <span class="agent-name">{{ agent.username }}</span>
+                    <span class="agent-name">{{ getAgentDisplayName(agent) }}</span>
                     <span class="agent-role">{{ agent.profession || '未知职业' }}</span>
                   </div>
                 </div>
@@ -148,13 +147,13 @@
         <!-- Chat Mode -->
         <div v-if="activeTab === 'chat'" class="chat-container">
 
-          <!-- Report Agent Tools Card -->
+          <!-- 报告智能体 Tools Card -->
           <div v-if="chatTarget === 'report_agent'" class="report-agent-tools-card">
             <div class="tools-card-header">
               <div class="tools-card-avatar">R</div>
               <div class="tools-card-info">
-                <div class="tools-card-name">Report Agent - Chat</div>
-                <div class="tools-card-subtitle">报告生成智能体的快速对话版本，可调用 4 种专业工具，拥有MiroFish的完整记忆</div>
+                <div class="tools-card-name">报告智能体 - 对话</div>
+                <div class="tools-card-subtitle">报告生成智能体的快速对话版本，可调用 4 种专业工具，拥有传播推演的完整记忆</div>
               </div>
               <button class="tools-card-toggle" @click="showToolsDetail = !showToolsDetail">
                 <svg :class="{ 'is-expanded': showToolsDetail }" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
@@ -195,7 +194,7 @@
                   </div>
                   <div class="tool-content">
                     <div class="tool-name">QuickSearch 快速检索</div>
-                    <div class="tool-desc">基于 GraphRAG 的即时查询接口，优化索引效率，用于快速提取具体的节点属性与离散事实</div>
+                    <div class="tool-desc">基于知识图谱的即时查询接口，优化索引效率，用于快速提取具体的节点属性与离散事实</div>
                   </div>
                 </div>
                 <div class="tool-item tool-green">
@@ -218,11 +217,11 @@
           <!-- Agent Profile Card -->
           <div v-if="chatTarget === 'agent' && selectedAgent" class="agent-profile-card">
             <div class="profile-card-header">
-              <div class="profile-card-avatar">{{ (selectedAgent.username || 'A')[0] }}</div>
+              <div class="profile-card-avatar">{{ getAgentInitial(selectedAgent) }}</div>
               <div class="profile-card-info">
-                <div class="profile-card-name">{{ selectedAgent.username }}</div>
+                <div class="profile-card-name">{{ getAgentDisplayName(selectedAgent) }}</div>
                 <div class="profile-card-meta">
-                  <span v-if="selectedAgent.name" class="profile-card-handle">@{{ selectedAgent.name }}</span>
+                  <span v-if="selectedAgent.username" class="profile-card-handle">@{{ selectedAgent.username }}</span>
                   <span class="profile-card-profession">{{ selectedAgent.profession || '未知职业' }}</span>
                 </div>
               </div>
@@ -249,7 +248,7 @@
                 </svg>
               </div>
               <p class="empty-text">
-                {{ chatTarget === 'report_agent' ? '与 Report Agent 对话，深入了解报告内容' : '与模拟个体对话，了解他们的观点' }}
+                {{ chatTarget === 'report_agent' ? '与报告智能体对话，深入了解报告内容' : '与模拟个体对话，了解他们的观点' }}
               </p>
             </div>
             <div 
@@ -260,21 +259,31 @@
             >
               <div class="message-avatar">
                 <span v-if="msg.role === 'user'">U</span>
-                <span v-else>{{ msg.role === 'assistant' && chatTarget === 'report_agent' ? 'R' : (selectedAgent?.username?.[0] || 'A') }}</span>
+                <span v-else>{{ msg.role === 'assistant' && chatTarget === 'report_agent' ? 'R' : getAgentInitial(selectedAgent) }}</span>
               </div>
               <div class="message-content">
                 <div class="message-header">
                   <span class="sender-name">
-                    {{ msg.role === 'user' ? 'You' : (chatTarget === 'report_agent' ? 'Report Agent' : (selectedAgent?.username || 'Agent')) }}
+                    {{ msg.role === 'user' ? '你' : (chatTarget === 'report_agent' ? '报告智能体' : getAgentDisplayName(selectedAgent)) }}
                   </span>
                   <span class="message-time">{{ formatTime(msg.timestamp) }}</span>
                 </div>
-                <div class="message-text" v-html="renderMarkdown(msg.content)"></div>
+                <div
+                  v-if="msg.content"
+                  class="message-text"
+                  :class="{ streaming: msg.streaming }"
+                  v-html="renderMarkdown(msg.content)"
+                ></div>
+                <div v-else-if="msg.streaming" class="typing-indicator inline-typing">
+                  <span></span>
+                  <span></span>
+                  <span></span>
+                </div>
               </div>
             </div>
-            <div v-if="isSending" class="chat-message assistant">
+            <div v-if="showTypingIndicator" class="chat-message assistant">
               <div class="message-avatar">
-                <span>{{ chatTarget === 'report_agent' ? 'R' : (selectedAgent?.username?.[0] || 'A') }}</span>
+                <span>{{ chatTarget === 'report_agent' ? 'R' : getAgentInitial(selectedAgent) }}</span>
               </div>
               <div class="message-content">
                 <div class="typing-indicator">
@@ -331,9 +340,9 @@
                     :checked="selectedAgents.has(idx)"
                     @change="toggleAgentSelection(idx)"
                   >
-                  <div class="checkbox-avatar">{{ (agent.username || 'A')[0] }}</div>
+                  <div class="checkbox-avatar">{{ getAgentInitial(agent) }}</div>
                   <div class="checkbox-info">
-                    <span class="checkbox-name">{{ agent.username }}</span>
+                    <span class="checkbox-name">{{ getAgentDisplayName(agent) }}</span>
                     <span class="checkbox-role">{{ agent.profession || '未知职业' }}</span>
                   </div>
                   <div class="checkbox-indicator">
@@ -412,7 +421,8 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { chatWithReport, getReport, getAgentLog } from '../api/report'
-import { interviewAgents, getSimulationProfilesRealtime } from '../api/simulation'
+import { interviewAgents, getRunStatus, getSimulationConfig, getSimulationProfilesRealtime, streamAgentChat } from '../api/simulation'
+import { sanitizeReportContent } from '../utils/reportContent'
 
 const props = defineProps({
   reportId: String,
@@ -427,14 +437,17 @@ const chatTarget = ref('report_agent')
 const showAgentDropdown = ref(false)
 const selectedAgent = ref(null)
 const selectedAgentIndex = ref(null)
+const selectedAgentKey = ref('')
 const showFullProfile = ref(true)
 const showToolsDetail = ref(true)
 
 // Chat State
 const chatInput = ref('')
 const chatHistory = ref([])
-const chatHistoryCache = ref({}) // 缓存所有对话记录: { 'report_agent': [], 'agent_0': [], 'agent_1': [], ... }
+const chatHistoryCache = ref({}) // 缓存所有对话记录: { 'report_agent': [], 'agent_<stable_key>': ... }
 const isSending = ref(false)
+const isAgentStreaming = ref(false)
+const streamAbortController = ref(null)
 const chatMessages = ref(null)
 const chatInputRef = ref(null)
 
@@ -450,11 +463,49 @@ const generatedSections = ref({})
 const collapsedSections = ref(new Set())
 const currentSectionIndex = ref(null)
 const profiles = ref([])
+const simulationTiming = ref({
+  totalRounds: null,
+  minutesPerRound: null,
+  totalHours: null
+})
 
 // Helper Methods
 const isSectionCompleted = (sectionIndex) => {
   return !!generatedSections.value[sectionIndex]
 }
+
+const showTypingIndicator = computed(() => {
+  if (!isSending.value) return false
+  return chatTarget.value === 'report_agent' || !isAgentStreaming.value
+})
+
+const formatDurationLabel = (hours) => {
+  if (!Number.isFinite(hours) || hours <= 0) return '预测报告'
+  if (Number.isInteger(hours)) return `未来${hours}个小时推演报告`
+
+  const minutes = Math.round(hours * 60)
+  if (minutes < 60) return `未来${minutes}分钟推演报告`
+
+  const wholeHours = Math.floor(minutes / 60)
+  const remainingMinutes = minutes % 60
+  return remainingMinutes === 0
+    ? `未来${wholeHours}个小时推演报告`
+    : `未来${wholeHours}个小时${remainingMinutes}分钟推演报告`
+}
+
+const reportTimeLabel = computed(() => {
+  const { totalRounds, minutesPerRound, totalHours } = simulationTiming.value
+
+  if (Number.isFinite(totalRounds) && totalRounds > 0 && Number.isFinite(minutesPerRound) && minutesPerRound > 0) {
+    return formatDurationLabel((totalRounds * minutesPerRound) / 60)
+  }
+
+  if (Number.isFinite(totalHours) && totalHours > 0) {
+    return formatDurationLabel(totalHours)
+  }
+
+  return '预测报告'
+})
 
 // Refs
 const leftPanel = ref(null)
@@ -483,18 +534,61 @@ const selectChatTarget = (target) => {
   }
 }
 
+const getAgentDisplayName = (agent) => {
+  return agent?.display_name || agent?.name || agent?.username || agent?.user_name || '智能体'
+}
+
+const getAgentInitial = (agent) => {
+  return (getAgentDisplayName(agent) || 'A')[0]
+}
+
+const getAgentStableKey = (agent, idx = null) => {
+  if (!agent) return ''
+  if (agent.stable_agent_key) return agent.stable_agent_key
+  if (agent.source_entity_uuid) return `entity_uuid:${agent.source_entity_uuid}`
+  if (agent.user_id !== undefined && agent.user_id !== null && agent.user_id !== '') {
+    return `user_id:${agent.user_id}`
+  }
+  if (idx !== null) return `idx:${idx}`
+  return agent.username || agent.name || agent.display_name || ''
+}
+
+const getChatCacheKey = () => {
+  if (chatTarget.value === 'report_agent') return 'report_agent'
+  return selectedAgentKey.value ? `agent_${selectedAgentKey.value}` : ''
+}
+
+const abortAgentStream = () => {
+  if (streamAbortController.value && isAgentStreaming.value) {
+    chatHistory.value = chatHistory.value.map(msg => (
+      msg.streaming
+        ? {
+            ...msg,
+            streaming: false,
+            content: msg.content || '（对话已中断）'
+          }
+        : msg
+    ))
+  }
+  if (streamAbortController.value) {
+    streamAbortController.value.abort()
+    streamAbortController.value = null
+  }
+  isAgentStreaming.value = false
+}
+
 // 保存当前对话记录到缓存
 const saveChatHistory = () => {
   if (chatHistory.value.length === 0) return
   
-  if (chatTarget.value === 'report_agent') {
-    chatHistoryCache.value['report_agent'] = [...chatHistory.value]
-  } else if (selectedAgentIndex.value !== null) {
-    chatHistoryCache.value[`agent_${selectedAgentIndex.value}`] = [...chatHistory.value]
+  const cacheKey = getChatCacheKey()
+  if (cacheKey) {
+    chatHistoryCache.value[cacheKey] = chatHistory.value.map(({ id, streaming, ...msg }) => msg)
   }
 }
 
 const selectReportAgentChat = () => {
+  abortAgentStream()
   // 保存当前对话记录
   saveChatHistory()
   
@@ -502,16 +596,19 @@ const selectReportAgentChat = () => {
   chatTarget.value = 'report_agent'
   selectedAgent.value = null
   selectedAgentIndex.value = null
+  selectedAgentKey.value = ''
   showAgentDropdown.value = false
   
-  // 恢复 Report Agent 的对话记录
+  // 恢复 报告智能体 的对话记录
   chatHistory.value = chatHistoryCache.value['report_agent'] || []
 }
 
 const selectSurveyTab = () => {
+  abortAgentStream()
   activeTab.value = 'survey'
   selectedAgent.value = null
   selectedAgentIndex.value = null
+  selectedAgentKey.value = ''
   showAgentDropdown.value = false
 }
 
@@ -524,17 +621,19 @@ const toggleAgentDropdown = () => {
 }
 
 const selectAgent = (agent, idx) => {
+  abortAgentStream()
   // 保存当前对话记录
   saveChatHistory()
   
   selectedAgent.value = agent
   selectedAgentIndex.value = idx
+  selectedAgentKey.value = getAgentStableKey(agent, idx)
   chatTarget.value = 'agent'
   showAgentDropdown.value = false
   
   // 恢复该 Agent 的对话记录
-  chatHistory.value = chatHistoryCache.value[`agent_${idx}`] || []
-  addLog(`选择对话对象: ${agent.username}`)
+  chatHistory.value = chatHistoryCache.value[`agent_${selectedAgentKey.value}`] || []
+  addLog(`选择对话对象: ${getAgentDisplayName(agent) || selectedAgentKey.value}`)
 }
 
 const formatTime = (timestamp) => {
@@ -553,7 +652,7 @@ const formatTime = (timestamp) => {
 const renderMarkdown = (content) => {
   if (!content) return ''
   
-  let processedContent = content.replace(/^##\s+.+\n+/, '')
+  let processedContent = sanitizeReportContent(content).replace(/^##\s+.+\n+/, '')
   let html = processedContent.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre class="code-block"><code>$2</code></pre>')
   html = html.replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>')
   html = html.replace(/^#### (.+)$/gm, '<h5 class="md-h5">$1</h5>')
@@ -648,7 +747,7 @@ const sendMessage = async () => {
 }
 
 const sendToReportAgent = async (message) => {
-  addLog(`向 Report Agent 发送: ${message.substring(0, 50)}...`)
+  addLog(`向 报告智能体 发送: ${message.substring(0, 50)}...`)
   
   // Build chat history for API
   const historyForApi = chatHistory.value
@@ -671,73 +770,111 @@ const sendToReportAgent = async (message) => {
       content: res.data.response || res.data.answer || '无响应',
       timestamp: new Date().toISOString()
     })
-    addLog('Report Agent 已回复')
+    addLog('报告智能体 已回复')
   } else {
     throw new Error(res.error || '请求失败')
   }
 }
 
 const sendToAgent = async (message) => {
-  if (!selectedAgent.value || selectedAgentIndex.value === null) {
+  if (!selectedAgent.value || !selectedAgentKey.value) {
     throw new Error('请先选择一个模拟个体')
   }
   
-  addLog(`向 ${selectedAgent.value.username} 发送: ${message.substring(0, 50)}...`)
-  
-  // Build prompt with chat history
-  let prompt = message
-  if (chatHistory.value.length > 1) {
-    const historyContext = chatHistory.value
-      .filter(msg => msg.content !== message)
-      .slice(-6)
-      .map(msg => `${msg.role === 'user' ? '提问者' : '你'}：${msg.content}`)
-      .join('\n')
-    prompt = `以下是我们之前的对话：\n${historyContext}\n\n现在我的新问题是：${message}`
+  const activeAgentKey = selectedAgentKey.value
+  const agentName = getAgentDisplayName(selectedAgent.value)
+  addLog(`向 ${agentName} 发送: ${message.substring(0, 50)}...`)
+
+  const historyForApi = chatHistory.value
+    .filter(msg => msg.role !== 'user' || msg.content !== message)
+    .slice(-12)
+    .map(msg => ({
+      role: msg.role,
+      content: msg.content
+    }))
+
+  const assistantMessage = {
+    id: `agent-stream-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    role: 'assistant',
+    content: '',
+    streaming: true,
+    timestamp: new Date().toISOString()
   }
-  
-  const res = await interviewAgents({
-    simulation_id: props.simulationId,
-    interviews: [{
-      agent_id: selectedAgentIndex.value,
-      prompt: prompt
-    }]
-  })
-  
-  if (res.success && res.data) {
-    // 正确的数据路径: res.data.result.results 是一个对象字典
-    // 格式: {"twitter_0": {...}, "reddit_0": {...}} 或单平台 {"reddit_0": {...}}
-    const resultData = res.data.result || res.data
-    const resultsDict = resultData.results || resultData
-    
-    // 将对象字典转换为数组，优先获取 reddit 平台的回复
-    let responseContent = null
-    const agentId = selectedAgentIndex.value
-    
-    if (typeof resultsDict === 'object' && !Array.isArray(resultsDict)) {
-      // 优先使用 reddit 平台回复，其次 twitter
-      const redditKey = `reddit_${agentId}`
-      const twitterKey = `twitter_${agentId}`
-      const agentResult = resultsDict[redditKey] || resultsDict[twitterKey] || Object.values(resultsDict)[0]
-      if (agentResult) {
-        responseContent = agentResult.response || agentResult.answer
+  chatHistory.value.push(assistantMessage)
+  let streamedContent = ''
+  scrollToBottom()
+
+  const controller = new AbortController()
+  streamAbortController.value = controller
+  isAgentStreaming.value = true
+
+  const updateAssistantMessage = (patch) => {
+    const assistantIndex = chatHistory.value.findIndex(msg => msg.id === assistantMessage.id)
+    if (assistantIndex < 0) return
+    chatHistory.value[assistantIndex] = {
+      ...chatHistory.value[assistantIndex],
+      ...patch
+    }
+  }
+
+  try {
+    await streamAgentChat(props.simulationId, {
+      agent_key: activeAgentKey,
+      user_id: selectedAgent.value.user_id,
+      platform: 'reddit',
+      message,
+      chat_history: historyForApi
+    }, {
+      signal: controller.signal,
+      onEvent: (event) => {
+        if (activeAgentKey !== selectedAgentKey.value) return
+        if (event.event === 'meta') {
+          addLog(`${event.agent?.name || agentName} 正在回复...`)
+        } else if (event.event === 'delta') {
+          streamedContent += event.content || ''
+          updateAssistantMessage({
+            content: streamedContent,
+            streaming: true
+          })
+          scrollToBottom()
+        } else if (event.event === 'done') {
+          updateAssistantMessage({
+            streaming: false
+          })
+          addLog(`${event.agent?.name || agentName} 已回复`)
+        }
       }
-    } else if (Array.isArray(resultsDict) && resultsDict.length > 0) {
-      // 兼容数组格式
-      responseContent = resultsDict[0].response || resultsDict[0].answer
-    }
-    
-    if (responseContent) {
-      chatHistory.value.push({
-        role: 'assistant',
-        content: responseContent,
-        timestamp: new Date().toISOString()
+    })
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      updateAssistantMessage({
+        content: streamedContent || '（对话已中断）',
+        streaming: false
       })
-      addLog(`${selectedAgent.value.username} 已回复`)
-    } else {
-      throw new Error('无响应数据')
+      return
     }
-  } else {
-    throw new Error(res.error || '请求失败')
+    updateAssistantMessage({
+      streaming: false
+    })
+    if (!streamedContent.trim()) {
+      const assistantIndex = chatHistory.value.findIndex(msg => msg.id === assistantMessage.id)
+      if (assistantIndex >= 0 && assistantIndex < chatHistory.value.length) {
+        chatHistory.value.splice(assistantIndex, 1)
+      }
+    }
+    throw err
+  } finally {
+    isAgentStreaming.value = false
+    if (streamAbortController.value === controller) {
+      streamAbortController.value = null
+    }
+  }
+
+  if (!streamedContent.trim()) {
+    updateAssistantMessage({
+      content: '（本次没有生成有效回复）',
+      streaming: false
+    })
   }
 }
 
@@ -820,7 +957,7 @@ const submitSurvey = async () => {
         
         surveyResultsList.push({
           agent_id: agentIdx,
-          agent_name: agent?.username || `Agent ${agentIdx}`,
+          agent_name: getAgentDisplayName(agent) || `智能体${agentIdx}`,
           profession: agent?.profession,
           question: surveyQuestion.value.trim(),
           answer: responseContent
@@ -871,7 +1008,7 @@ const loadAgentLogs = async () => {
         }
         
         if (log.action === 'section_complete' && log.section_index < 100 && log.details?.content) {
-          generatedSections.value[log.section_index] = log.details.content
+          generatedSections.value[log.section_index] = sanitizeReportContent(log.details.content)
         }
       })
       
@@ -879,6 +1016,50 @@ const loadAgentLogs = async () => {
     }
   } catch (err) {
     addLog(`加载报告日志失败: ${err.message}`)
+  }
+}
+
+const mergeSimulationTiming = (partial = {}) => {
+  simulationTiming.value = {
+    ...simulationTiming.value,
+    ...Object.fromEntries(
+      Object.entries(partial).filter(([, value]) => Number.isFinite(value) && value > 0)
+    )
+  }
+}
+
+const fetchSimulationTiming = async () => {
+  if (!props.simulationId) return
+
+  try {
+    const [statusRes, configRes] = await Promise.allSettled([
+      getRunStatus(props.simulationId),
+      getSimulationConfig(props.simulationId)
+    ])
+
+    if (statusRes.status === 'fulfilled' && statusRes.value?.success && statusRes.value.data) {
+      const status = statusRes.value.data
+      mergeSimulationTiming({
+        totalRounds: Number(status.total_rounds)
+      })
+    }
+
+    if (configRes.status === 'fulfilled' && configRes.value?.success && configRes.value.data) {
+      const timeConfig = configRes.value.data.time_config || {}
+      const minutesPerRound = Number(timeConfig.minutes_per_round)
+      const totalHours = Number(timeConfig.total_simulation_hours)
+      const configRounds = minutesPerRound > 0 && totalHours > 0
+        ? Math.floor((totalHours * 60) / minutesPerRound)
+        : null
+
+      mergeSimulationTiming({
+        minutesPerRound,
+        totalHours,
+        totalRounds: simulationTiming.value.totalRounds || configRounds
+      })
+    }
+  } catch (err) {
+    console.warn('Failed to fetch simulation timing:', err)
   }
 }
 
@@ -913,6 +1094,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  abortAgentStream()
   document.removeEventListener('click', handleClickOutside)
 })
 
@@ -923,7 +1105,14 @@ watch(() => props.reportId, (newId) => {
 }, { immediate: true })
 
 watch(() => props.simulationId, (newId) => {
+  simulationTiming.value = {
+    totalRounds: null,
+    minutesPerRound: null,
+    totalHours: null
+  }
+
   if (newId) {
+    fetchSimulationTiming()
     loadProfiles()
   }
 }, { immediate: true })
@@ -1011,13 +1200,6 @@ watch(() => props.simulationId, (newId) => {
   padding: 4px 8px;
   letter-spacing: 0.05em;
   text-transform: uppercase;
-}
-
-.report-id {
-  font-size: 11px;
-  color: #9CA3AF;
-  font-weight: 500;
-  letter-spacing: 0.02em;
 }
 
 .main-title {
@@ -1454,7 +1636,7 @@ watch(() => props.simulationId, (newId) => {
   overflow: hidden;
 }
 
-/* Report Agent Tools Card */
+/* 报告智能体 Tools Card */
 .report-agent-tools-card {
   border-bottom: 1px solid #E5E7EB;
   background: linear-gradient(135deg, #F8FAFC 0%, #F1F5F9 100%);
@@ -2045,6 +2227,12 @@ watch(() => props.simulationId, (newId) => {
   border-bottom-left-radius: 4px;
 }
 
+.inline-typing {
+  display: inline-flex;
+  width: fit-content;
+  margin-top: 2px;
+}
+
 .typing-indicator span {
   width: 8px;
   height: 8px;
@@ -2060,6 +2248,23 @@ watch(() => props.simulationId, (newId) => {
 @keyframes typing {
   0%, 60%, 100% { transform: translateY(0); }
   30% { transform: translateY(-8px); }
+}
+
+.message-text.streaming::after {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 16px;
+  margin-left: 3px;
+  vertical-align: -2px;
+  background: #4B5563;
+  border-radius: 2px;
+  animation: cursorBlink 0.9s steps(2, start) infinite;
+}
+
+@keyframes cursorBlink {
+  0%, 45% { opacity: 1; }
+  46%, 100% { opacity: 0; }
 }
 
 /* Chat Input */

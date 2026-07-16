@@ -8,8 +8,7 @@
           <!-- Report Header -->
           <div class="report-header-block">
             <div class="report-meta">
-              <span class="report-tag">Prediction Report</span>
-              <span class="report-id">ID: {{ reportId || 'REF-2024-X92' }}</span>
+              <span class="report-tag">{{ reportTimeLabel }}</span>
             </div>
             <h1 class="main-title">{{ reportOutline.title }}</h1>
             <p class="sub-title">{{ reportOutline.summary }}</p>
@@ -72,7 +71,7 @@
             <div class="waiting-ring"></div>
             <div class="waiting-ring"></div>
           </div>
-          <span class="waiting-text">Waiting for Report Agent...</span>
+          <span class="waiting-text">等待报告生成智能体...</span>
         </div>
       </div>
 
@@ -89,15 +88,15 @@
         <div class="workflow-overview" v-if="agentLogs.length > 0 || reportOutline">
           <div class="workflow-metrics">
             <div class="metric">
-              <span class="metric-label">Sections</span>
+              <span class="metric-label">章节</span>
               <span class="metric-value mono">{{ completedSections }}/{{ totalSections }}</span>
             </div>
             <div class="metric">
-              <span class="metric-label">Elapsed</span>
+              <span class="metric-label">耗时</span>
               <span class="metric-value mono">{{ formatElapsedTime }}</span>
             </div>
             <div class="metric">
-              <span class="metric-label">Tools</span>
+              <span class="metric-label">工具</span>
               <span class="metric-value mono">{{ totalToolCalls }}</span>
             </div>
             <div class="metric metric-right">
@@ -166,11 +165,11 @@
                   <!-- Report Start -->
                   <template v-if="log.action === 'report_start'">
                     <div class="info-row">
-                      <span class="info-key">Simulation</span>
+                      <span class="info-key">模拟</span>
                       <span class="info-val mono">{{ log.details?.simulation_id }}</span>
                     </div>
                     <div class="info-row" v-if="log.details?.simulation_requirement">
-                      <span class="info-key">Requirement</span>
+                      <span class="info-key">需求</span>
                       <span class="info-val">{{ log.details.simulation_requirement }}</span>
                     </div>
                   </template>
@@ -182,7 +181,7 @@
                   <template v-if="log.action === 'planning_complete'">
                     <div class="status-message success">{{ log.details?.message }}</div>
                     <div class="outline-badge" v-if="log.details?.outline">
-                      {{ log.details.outline.sections?.length || 0 }} sections planned
+                      {{ log.details.outline.sections?.length || 0 }} 个章节已规划
                     </div>
                   </template>
 
@@ -202,7 +201,7 @@
                         <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
                       </svg>
                       <span class="tag-title">{{ log.section_title }}</span>
-                      <span v-if="log.action === 'subsection_content'" class="tag-sub">(subsection)</span>
+                      <span v-if="log.action === 'subsection_content'" class="tag-sub">(子章节)</span>
                     </div>
                   </template>
                   
@@ -213,7 +212,7 @@
                         <polyline points="20 6 9 17 4 12"></polyline>
                       </svg>
                       <span class="tag-title">{{ log.section_title }}</span>
-                      <span v-if="log.details?.subsection_count > 0" class="tag-sub">(+{{ log.details.subsection_count }} subsections)</span>
+                      <span v-if="log.details?.subsection_count > 0" class="tag-sub">(+{{ log.details.subsection_count }} 个子章节)</span>
                     </div>
                   </template>
 
@@ -309,12 +308,12 @@
                   <!-- LLM Response -->
                   <template v-if="log.action === 'llm_response'">
                     <div class="llm-meta">
-                      <span class="meta-tag">Iteration {{ log.details?.iteration }}</span>
+                      <span class="meta-tag">迭代 {{ log.details?.iteration }}</span>
                       <span class="meta-tag" :class="{ active: log.details?.has_tool_calls }">
-                        Tools: {{ log.details?.has_tool_calls ? 'Yes' : 'No' }}
+                        工具: {{ log.details?.has_tool_calls ? '是' : '否' }}
                       </span>
                       <span class="meta-tag" :class="{ active: log.details?.has_final_answer, 'final-answer': log.details?.has_final_answer }">
-                        Final: {{ log.details?.has_final_answer ? 'Yes' : 'No' }}
+                        结论: {{ log.details?.has_final_answer ? '是' : '否' }}
                       </span>
                     </div>
                     <!-- 当是最终答案时，显示特殊提示 -->
@@ -349,17 +348,17 @@
                   <div class="footer-actions">
                     <!-- Tool Call: Show/Hide Params -->
                     <button v-if="log.action === 'tool_call' && log.details?.parameters" class="action-btn" @click.stop="toggleLogExpand(log)">
-                      {{ expandedLogs.has(log.timestamp) ? 'Hide Params' : 'Show Params' }}
+                      {{ expandedLogs.has(log.timestamp) ? '隐藏参数' : '显示参数' }}
                     </button>
                     
                     <!-- Tool Result: Raw/Structured View -->
                     <button v-if="log.action === 'tool_result'" class="action-btn" @click.stop="toggleRawResult(log.timestamp, $event)">
-                      {{ showRawResult[log.timestamp] ? 'Structured View' : 'Raw Output' }}
+                      {{ showRawResult[log.timestamp] ? '结构化视图' : '原始输出' }}
                     </button>
                     
                     <!-- LLM Response: Show/Hide Response -->
                     <button v-if="log.action === 'llm_response' && log.details?.response" class="action-btn" @click.stop="toggleLogExpand(log)">
-                      {{ expandedLogs.has(log.timestamp) ? 'Hide Response' : 'Show Response' }}
+                      {{ expandedLogs.has(log.timestamp) ? '隐藏回复' : '显示回复' }}
                     </button>
                   </div>
                 </div>
@@ -370,17 +369,17 @@
           <!-- Empty State -->
           <div v-if="agentLogs.length === 0 && !isComplete" class="workflow-empty">
             <div class="empty-pulse"></div>
-            <span>Waiting for agent activity...</span>
+            <span>等待智能体活动...</span>
           </div>
         </div>
       </div>
     </div>
 
     <!-- Bottom Console Logs -->
-    <div class="console-logs">
+    <div v-if="false" class="console-logs">
       <div class="log-header">
-        <span class="log-title">CONSOLE OUTPUT</span>
-        <span class="log-id">{{ reportId || 'NO_REPORT' }}</span>
+        <span class="log-title">控制台输出</span>
+        <span class="log-id">{{ reportId || '无报告' }}</span>
       </div>
       <div class="log-content" ref="logContent">
         <div class="log-line" v-for="(log, idx) in consoleLogs" :key="idx">
@@ -394,7 +393,10 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted, nextTick, h, reactive } from 'vue'
 import { useRouter } from 'vue-router'
-import { getAgentLog, getConsoleLog } from '../api/report'
+import { getAgentLog, getConsoleLog, getReport, getReportSections } from '../api/report'
+import { getRunStatus, getSimulationConfig } from '../api/simulation'
+import { translateEntityType } from '../utils/entityTranslations.js'
+import { sanitizeReportContent } from '../utils/reportContent'
 
 const router = useRouter()
 
@@ -421,15 +423,22 @@ const consoleLogLine = ref(0)
 const reportOutline = ref(null)
 const currentSectionIndex = ref(null)
 const generatedSections = ref({})
+const sectionBuffer = ref({})
 const expandedContent = ref(new Set())
 const expandedLogs = ref(new Set())
 const collapsedSections = ref(new Set())
 const isComplete = ref(false)
+const isFailed = ref(false)
 const startTime = ref(null)
 const leftPanel = ref(null)
 const rightPanel = ref(null)
 const logContent = ref(null)
 const showRawResult = reactive({})
+const simulationTiming = ref({
+  totalRounds: null,
+  minutesPerRound: null,
+  totalHours: null
+})
 
 // Toggle functions
 const toggleRawResult = (timestamp, event) => {
@@ -497,32 +506,32 @@ const isLogCollapsed = (log) => {
 // Tool configurations with display names and colors
 const toolConfig = {
   'insight_forge': {
-    name: 'Deep Insight',
+    name: '深度洞察',
     color: 'purple',
     icon: 'lightbulb' // 灯泡图标 - 代表洞察
   },
   'panorama_search': {
-    name: 'Panorama Search',
+    name: '全景搜索',
     color: 'blue',
     icon: 'globe' // 地球图标 - 代表全景搜索
   },
   'interview_agents': {
-    name: 'Agent Interview',
+    name: '智能体访谈',
     color: 'green',
     icon: 'users' // 用户图标 - 代表对话
   },
   'quick_search': {
-    name: 'Quick Search',
+    name: '快速搜索',
     color: 'orange',
     icon: 'zap' // 闪电图标 - 代表快速
   },
   'get_graph_statistics': {
-    name: 'Graph Stats',
+    name: '图谱统计',
     color: 'cyan',
     icon: 'chart' // 图表图标 - 代表统计
   },
   'get_entities_by_type': {
-    name: 'Entity Query',
+    name: '实体查询',
     color: 'pink',
     icon: 'database' // 数据库图标 - 代表实体
   }
@@ -702,7 +711,7 @@ const parseInterview = (text) => {
     const topicMatch = text.match(/\*\*采访主题:\*\*\s*(.+?)(?:\n|$)/)
     if (topicMatch) result.topic = topicMatch[1].trim()
     
-    // 提取采访人数（如 "5 / 9 位模拟Agent"）
+    // 提取采访人数（如 "5 / 9 位模拟智能体"）
     const countMatch = text.match(/\*\*采访人数:\*\*\s*(\d+)\s*\/\s*(\d+)/)
     if (countMatch) {
       result.successCount = parseInt(countMatch[1])
@@ -974,21 +983,21 @@ const InsightDisplay = {
       // Header Section - like interview header
       h('div', { class: 'insight-header' }, [
         h('div', { class: 'header-main' }, [
-          h('div', { class: 'header-title' }, 'Deep Insight'),
+          h('div', { class: 'header-title' }, '深度洞察'),
           h('div', { class: 'header-stats' }, [
             h('span', { class: 'stat-item' }, [
               h('span', { class: 'stat-value' }, props.result.stats.facts || props.result.facts.length),
-              h('span', { class: 'stat-label' }, 'Facts')
+              h('span', { class: 'stat-label' }, '事实')
             ]),
             h('span', { class: 'stat-divider' }, '/'),
             h('span', { class: 'stat-item' }, [
               h('span', { class: 'stat-value' }, props.result.stats.entities || props.result.entities.length),
-              h('span', { class: 'stat-label' }, 'Entities')
+              h('span', { class: 'stat-label' }, '实体')
             ]),
             h('span', { class: 'stat-divider' }, '/'),
             h('span', { class: 'stat-item' }, [
               h('span', { class: 'stat-value' }, props.result.stats.relationships || props.result.relations.length),
-              h('span', { class: 'stat-label' }, 'Relations')
+              h('span', { class: 'stat-label' }, '关系')
             ]),
             props.resultLength && h('span', { class: 'stat-divider' }, '·'),
             props.resultLength && h('span', { class: 'stat-size' }, formatSize(props.resultLength))
@@ -1061,7 +1070,7 @@ const InsightDisplay = {
             (expandedEntities.value ? props.result.entities : props.result.entities.slice(0, 12)).map((entity, i) => 
               h('div', { class: 'entity-tag', key: i, title: entity.summary || '' }, [
                 h('span', { class: 'entity-name' }, entity.name),
-                h('span', { class: 'entity-type' }, entity.type),
+                h('span', { class: 'entity-type' }, translateEntityType(entity.type)),
                 entity.relatedFactsCount > 0 && h('span', { class: 'entity-fact-count' }, `${entity.relatedFactsCount}条`)
               ])
             )
@@ -1145,16 +1154,16 @@ const PanoramaDisplay = {
       // Header Section
       h('div', { class: 'panorama-header' }, [
         h('div', { class: 'header-main' }, [
-          h('div', { class: 'header-title' }, 'Panorama Search'),
+          h('div', { class: 'header-title' }, '全景搜索'),
           h('div', { class: 'header-stats' }, [
             h('span', { class: 'stat-item' }, [
               h('span', { class: 'stat-value' }, props.result.stats.nodes),
-              h('span', { class: 'stat-label' }, 'Nodes')
+              h('span', { class: 'stat-label' }, '节点')
             ]),
             h('span', { class: 'stat-divider' }, '/'),
             h('span', { class: 'stat-item' }, [
               h('span', { class: 'stat-value' }, props.result.stats.edges),
-              h('span', { class: 'stat-label' }, 'Edges')
+              h('span', { class: 'stat-label' }, '边')
             ]),
             props.resultLength && h('span', { class: 'stat-divider' }, '·'),
             props.resultLength && h('span', { class: 'stat-size' }, formatSize(props.resultLength))
@@ -1249,7 +1258,7 @@ const PanoramaDisplay = {
             (expandedEntities.value ? props.result.entities : props.result.entities.slice(0, 8)).map((entity, i) => 
               h('div', { class: 'entity-tag', key: i }, [
                 h('span', { class: 'entity-name' }, entity.name),
-                entity.type && h('span', { class: 'entity-type' }, entity.type)
+                entity.type && h('span', { class: 'entity-type' }, translateEntityType(entity.type))
               ])
             )
           ) : h('div', { class: 'empty-state' }, '暂无涉及实体'),
@@ -1395,16 +1404,16 @@ const InterviewDisplay = {
       // Header Section
       h('div', { class: 'interview-header' }, [
         h('div', { class: 'header-main' }, [
-          h('div', { class: 'header-title' }, 'Agent Interview'),
+          h('div', { class: 'header-title' }, '智能体访谈'),
           h('div', { class: 'header-stats' }, [
             h('span', { class: 'stat-item' }, [
               h('span', { class: 'stat-value' }, props.result.successCount || props.result.interviews.length),
-              h('span', { class: 'stat-label' }, 'Interviewed')
+              h('span', { class: 'stat-label' }, '已访谈')
             ]),
             props.result.totalCount > 0 && h('span', { class: 'stat-divider' }, '/'),
             props.result.totalCount > 0 && h('span', { class: 'stat-item' }, [
               h('span', { class: 'stat-value' }, props.result.totalCount),
-              h('span', { class: 'stat-label' }, 'Total')
+              h('span', { class: 'stat-label' }, '总计')
             ]),
             props.resultLength && h('span', { class: 'stat-divider' }, '·'),
             props.resultLength && h('span', { class: 'stat-size' }, formatSize(props.resultLength))
@@ -1421,7 +1430,7 @@ const InterviewDisplay = {
           onClick: () => { activeIndex.value = i }
         }, [
           h('span', { class: 'tab-avatar' }, interview.name ? interview.name.charAt(0) : (i + 1)),
-          h('span', { class: 'tab-name' }, interview.title || interview.name || `Agent ${i + 1}`)
+          h('span', { class: 'tab-name' }, interview.title || interview.name || `智能体${i + 1}`)
         ]))
       ),
       
@@ -1431,7 +1440,7 @@ const InterviewDisplay = {
         h('div', { class: 'agent-profile' }, [
           h('div', { class: 'profile-avatar' }, props.result.interviews[activeIndex.value]?.name?.charAt(0) || 'A'),
           h('div', { class: 'profile-info' }, [
-            h('div', { class: 'profile-name' }, props.result.interviews[activeIndex.value]?.name || 'Agent'),
+            h('div', { class: 'profile-name' }, props.result.interviews[activeIndex.value]?.name || '智能体'),
             h('div', { class: 'profile-role' }, props.result.interviews[activeIndex.value]?.role || ''),
             props.result.interviews[activeIndex.value]?.bio && h('div', { class: 'profile-bio' }, props.result.interviews[activeIndex.value].bio)
           ])
@@ -1461,7 +1470,7 @@ const InterviewDisplay = {
               h('div', { class: 'qa-question' }, [
                 h('div', { class: 'qa-badge q-badge' }, `Q${qIdx + 1}`),
                 h('div', { class: 'qa-content' }, [
-                  h('div', { class: 'qa-sender' }, 'Interviewer'),
+                  h('div', { class: 'qa-sender' }, '访谈者'),
                   h('div', { class: 'qa-text' }, question)
                 ])
               ]),
@@ -1471,7 +1480,7 @@ const InterviewDisplay = {
                 h('div', { class: 'qa-badge a-badge' }, `A${qIdx + 1}`),
                 h('div', { class: 'qa-content' }, [
                   h('div', { class: 'qa-answer-header' }, [
-                    h('div', { class: 'qa-sender' }, interview?.name || 'Agent'),
+                    h('div', { class: 'qa-sender' }, interview?.name || '智能体'),
                     // 双平台切换按钮
                     hasDualPlatform && h('div', { class: 'platform-switch' }, [
                       h('button', {
@@ -1506,7 +1515,7 @@ const InterviewDisplay = {
                   answerText.length > 400 && h('button', {
                     class: 'expand-answer-btn',
                     onClick: () => toggleAnswer(expandKey)
-                  }, isExpanded ? 'Show Less' : 'Show More')
+                  }, isExpanded ? '收起' : '展开')
                 ])
               ])
             ])
@@ -1515,7 +1524,7 @@ const InterviewDisplay = {
         
         // Key Quotes Section
         props.result.interviews[activeIndex.value]?.quotes?.length > 0 && h('div', { class: 'quotes-section' }, [
-          h('div', { class: 'quotes-header' }, 'Key Quotes'),
+          h('div', { class: 'quotes-header' }, '关键引述'),
           h('div', { class: 'quotes-list' },
             props.result.interviews[activeIndex.value].quotes.slice(0, 3).map((quote, qi) => {
               const cleanedQuote = cleanQuoteText(quote)
@@ -1532,7 +1541,7 @@ const InterviewDisplay = {
 
       // Summary Section (Collapsible)
       props.result.summary && h('div', { class: 'summary-section' }, [
-        h('div', { class: 'summary-header' }, 'Interview Summary'),
+        h('div', { class: 'summary-header' }, '访谈摘要'),
         h('div', { 
           class: 'summary-content',
           innerHTML: renderMarkdown(props.result.summary.length > 500 ? props.result.summary.substring(0, 500) + '...' : props.result.summary)
@@ -1568,11 +1577,11 @@ const QuickSearchDisplay = {
       // Header Section
       h('div', { class: 'quicksearch-header' }, [
         h('div', { class: 'header-main' }, [
-          h('div', { class: 'header-title' }, 'Quick Search'),
+          h('div', { class: 'header-title' }, '快速搜索'),
           h('div', { class: 'header-stats' }, [
             h('span', { class: 'stat-item' }, [
               h('span', { class: 'stat-value' }, props.result.count || props.result.facts.length),
-              h('span', { class: 'stat-label' }, 'Results')
+              h('span', { class: 'stat-label' }, '结果')
             ]),
             props.resultLength && h('span', { class: 'stat-divider' }, '·'),
             props.resultLength && h('span', { class: 'stat-size' }, formatSize(props.resultLength))
@@ -1672,14 +1681,16 @@ const QuickSearchDisplay = {
 // Computed
 const statusClass = computed(() => {
   if (isComplete.value) return 'completed'
+  if (isFailed.value) return 'failed'
   if (agentLogs.value.length > 0) return 'processing'
   return 'pending'
 })
 
 const statusText = computed(() => {
-  if (isComplete.value) return 'Completed'
-  if (agentLogs.value.length > 0) return 'Generating...'
-  return 'Waiting'
+  if (isComplete.value) return '已完成'
+  if (isFailed.value) return '生成失败'
+  if (agentLogs.value.length > 0) return '生成中...'
+  return '等待中'
 })
 
 const totalSections = computed(() => {
@@ -1711,6 +1722,34 @@ const formatElapsedTime = computed(() => {
 
 const displayLogs = computed(() => {
   return agentLogs.value
+})
+
+const formatDurationLabel = (hours) => {
+  if (!Number.isFinite(hours) || hours <= 0) return '预测报告'
+  if (Number.isInteger(hours)) return `未来${hours}个小时推演报告`
+
+  const minutes = Math.round(hours * 60)
+  if (minutes < 60) return `未来${minutes}分钟推演报告`
+
+  const wholeHours = Math.floor(minutes / 60)
+  const remainingMinutes = minutes % 60
+  return remainingMinutes === 0
+    ? `未来${wholeHours}个小时推演报告`
+    : `未来${wholeHours}个小时${remainingMinutes}分钟推演报告`
+}
+
+const reportTimeLabel = computed(() => {
+  const { totalRounds, minutesPerRound, totalHours } = simulationTiming.value
+
+  if (Number.isFinite(totalRounds) && totalRounds > 0 && Number.isFinite(minutesPerRound) && minutesPerRound > 0) {
+    return formatDurationLabel((totalRounds * minutesPerRound) / 60)
+  }
+
+  if (Number.isFinite(totalHours) && totalHours > 0) {
+    return formatDurationLabel(totalHours)
+  }
+
+  return '预测报告'
 })
 
 // Workflow steps overview (status-based, no nested cards)
@@ -1755,10 +1794,10 @@ const workflowSteps = computed(() => {
   const planningStatus = isPlanningDone.value ? 'done' : (isPlanningStarted.value ? 'active' : 'todo')
   steps.push({
     key: 'planning',
-    noLabel: 'PL',
-    title: 'Planning / Outline',
+    noLabel: '规划',
+    title: '规划 / 大纲',
     status: planningStatus,
-    meta: planningStatus === 'active' ? 'IN PROGRESS' : ''
+    meta: planningStatus === 'active' ? '进行中' : ''
   })
 
   // Sections (if outline exists)
@@ -1774,7 +1813,7 @@ const workflowSteps = computed(() => {
       noLabel: String(idx).padStart(2, '0'),
       title: section.title,
       status,
-      meta: status === 'active' ? 'IN PROGRESS' : ''
+      meta: status === 'active' ? '进行中' : ''
     })
   })
 
@@ -1782,10 +1821,10 @@ const workflowSteps = computed(() => {
   const completeStatus = isComplete.value ? 'done' : (isFinalizing.value ? 'active' : 'todo')
   steps.push({
     key: 'complete',
-    noLabel: 'OK',
-    title: 'Complete',
+    noLabel: '完成',
+    title: '完成',
     status: completeStatus,
-    meta: completeStatus === 'active' ? 'FINALIZING' : ''
+    meta: completeStatus === 'active' ? '完成中' : ''
   })
 
   return steps
@@ -1798,6 +1837,55 @@ const addLog = (msg) => {
 
 const isSectionCompleted = (sectionIndex) => {
   return !!generatedSections.value[sectionIndex]
+}
+
+const getNextDisplaySectionIndex = () => {
+  const sections = reportOutline.value?.sections || []
+  for (let i = 0; i < sections.length; i += 1) {
+    if (!generatedSections.value[i + 1]) return i + 1
+  }
+  return null
+}
+
+const syncCurrentSectionIndex = () => {
+  if (isComplete.value) {
+    currentSectionIndex.value = null
+    return
+  }
+  currentSectionIndex.value = getNextDisplaySectionIndex()
+}
+
+const publishSequentialSections = () => {
+  const nextSections = { ...generatedSections.value }
+  let nextIndex = 1
+  while (nextSections[nextIndex]) {
+    nextIndex += 1
+  }
+
+  let changed = false
+  while (sectionBuffer.value[nextIndex]) {
+    nextSections[nextIndex] = sectionBuffer.value[nextIndex]
+    delete sectionBuffer.value[nextIndex]
+    expandedContent.value.add(nextIndex - 1)
+    changed = true
+    nextIndex += 1
+  }
+
+  if (changed) {
+    generatedSections.value = nextSections
+    syncCurrentSectionIndex()
+  }
+}
+
+const queueSectionContent = (sectionIndex, content) => {
+  if (!sectionIndex || !content) return
+  const mainIndex = getMainSectionIndex(sectionIndex)
+  if (isSubsection(sectionIndex) || generatedSections.value[mainIndex]) return
+  sectionBuffer.value = {
+    ...sectionBuffer.value,
+    [mainIndex]: sanitizeReportContent(content)
+  }
+  publishSequentialSections()
 }
 
 // 从 section_index 获取主章节索引
@@ -1853,7 +1941,7 @@ const renderMarkdown = (content) => {
   if (!content) return ''
   
   // 去掉开头的二级标题（## xxx），因为章节标题已在外层显示
-  let processedContent = content.replace(/^##\s+.+\n+/, '')
+  let processedContent = sanitizeReportContent(content).replace(/^##\s+.+\n+/, '')
   
   // 处理代码块
   let html = processedContent.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre class="code-block"><code>$2</code></pre>')
@@ -1924,17 +2012,17 @@ const getConnectorClass = (log, idx, total) => {
 
 const getActionLabel = (action) => {
   const labels = {
-    'report_start': 'Report Started',
-    'planning_start': 'Planning',
-    'planning_complete': 'Plan Complete',
-    'section_start': 'Section Start',
-    'section_content': 'Content Ready',
-    'subsection_content': 'Subsection Ready',
-    'section_complete': 'Section Done',
-    'tool_call': 'Tool Call',
-    'tool_result': 'Tool Result',
-    'llm_response': 'LLM Response',
-    'report_complete': 'Complete'
+    'report_start': '报告开始',
+    'planning_start': '规划',
+    'planning_complete': '规划完成',
+    'section_start': '章节开始',
+    'section_content': '内容就绪',
+    'subsection_content': '子章节就绪',
+    'section_complete': '章节完成',
+    'tool_call': '工具调用',
+    'tool_result': '工具返回',
+    'llm_response': 'LLM响应',
+    'report_complete': '完成'
   }
   return labels[action] || action
 }
@@ -1949,6 +2037,120 @@ const getLogLevelClass = (log) => {
 // Polling
 let agentLogTimer = null
 let consoleLogTimer = null
+
+const hydrateReportSnapshot = (reportData) => {
+  if (!reportData) return
+
+  if (reportData.created_at && !startTime.value) {
+    startTime.value = new Date(reportData.created_at)
+  }
+
+  if (reportData.outline) {
+    reportOutline.value = reportData.outline
+    ;(reportData.generated_sections || []).forEach((section) => {
+      if (!section?.is_subsection && section?.content?.trim()) {
+        queueSectionContent(section.section_index, section.content)
+      }
+    })
+    ;(reportData.outline.sections || []).forEach((section, index) => {
+      if (section?.content?.trim()) {
+        queueSectionContent(index + 1, section.content)
+      }
+    })
+  }
+
+  if (reportData.status === 'completed') {
+    isComplete.value = true
+    isFailed.value = false
+    currentSectionIndex.value = null
+    emit('update-status', 'completed')
+    stopPolling()
+  } else if (reportData.status === 'failed') {
+    isFailed.value = true
+    currentSectionIndex.value = null
+    emit('update-status', 'error')
+    stopPolling()
+  }
+}
+
+const hydrateSectionsSnapshot = (sections = []) => {
+  sections
+    .filter(section => !section?.is_subsection && section?.content?.trim())
+    .sort((a, b) => Number(a.section_index || 0) - Number(b.section_index || 0))
+    .forEach(section => {
+      queueSectionContent(section.section_index, section.content)
+    })
+}
+
+const fetchReportSnapshot = async () => {
+  if (!props.reportId) return
+
+  try {
+    const res = await getReport(props.reportId)
+    if (res.success && res.data) {
+      hydrateReportSnapshot(res.data)
+    }
+  } catch (err) {
+    console.warn('Failed to fetch report snapshot:', err)
+  }
+}
+
+const fetchGeneratedSections = async () => {
+  if (!props.reportId) return
+
+  try {
+    const res = await getReportSections(props.reportId)
+    if (res.success && res.data) {
+      hydrateSectionsSnapshot(res.data.sections || [])
+    }
+  } catch (err) {
+    console.warn('Failed to fetch generated sections:', err)
+  }
+}
+
+const mergeSimulationTiming = (partial = {}) => {
+  simulationTiming.value = {
+    ...simulationTiming.value,
+    ...Object.fromEntries(
+      Object.entries(partial).filter(([, value]) => Number.isFinite(value) && value > 0)
+    )
+  }
+}
+
+const fetchSimulationTiming = async () => {
+  if (!props.simulationId) return
+
+  try {
+    const [statusRes, configRes] = await Promise.allSettled([
+      getRunStatus(props.simulationId),
+      getSimulationConfig(props.simulationId)
+    ])
+
+    if (statusRes.status === 'fulfilled' && statusRes.value?.success && statusRes.value.data) {
+      const status = statusRes.value.data
+      mergeSimulationTiming({
+        totalRounds: Number(status.total_rounds)
+      })
+    }
+
+    if (configRes.status === 'fulfilled' && configRes.value?.success && configRes.value.data) {
+      const timeConfig = configRes.value.data.time_config || {}
+      const minutesPerRound = Number(timeConfig.minutes_per_round)
+      const totalHours = Number(timeConfig.total_simulation_hours)
+      const configRounds = minutesPerRound > 0 && totalHours > 0
+        ? Math.floor((totalHours * 60) / minutesPerRound)
+        : null
+
+      mergeSimulationTiming({
+        minutesPerRound,
+        totalHours,
+        totalRounds: simulationTiming.value.totalRounds || configRounds
+      })
+    }
+  } catch (err) {
+    console.warn('Failed to fetch simulation timing:', err)
+  }
+}
 
 const fetchAgentLog = async () => {
   if (!props.reportId) return
@@ -1965,13 +2167,11 @@ const fetchAgentLog = async () => {
           
           if (log.action === 'planning_complete' && log.details?.outline) {
             reportOutline.value = log.details.outline
+            syncCurrentSectionIndex()
           }
           
           if (log.action === 'section_start') {
-            // 无论是主章节还是子章节开始，都映射到主章节索引
-            // 后端编号：主章节 1,2,3... 子章节 101,102（第1章子章节1,2）
-            const mainIndex = getMainSectionIndex(log.section_index)
-            currentSectionIndex.value = mainIndex
+            syncCurrentSectionIndex()
           }
           
           // section_content / subsection_content - 表示内容生成完成（但整个章节可能还没完成）
@@ -1988,20 +2188,26 @@ const fetchAgentLog = async () => {
             const mainIndex = getMainSectionIndex(log.section_index)
             // 只有主章节完成时（section_index < 100）才更新内容和清除 loading
             if (!isSubsection(log.section_index) && log.details?.content) {
-              generatedSections.value[mainIndex] = log.details.content
-              // 自动展开刚生成的章节
-              expandedContent.value.add(mainIndex - 1)
-              currentSectionIndex.value = null
+              queueSectionContent(mainIndex, log.details.content)
+              syncCurrentSectionIndex()
             }
             // 子章节完成时不清除 currentSectionIndex，继续显示 loading
           }
           
           if (log.action === 'report_complete') {
             isComplete.value = true
+            isFailed.value = false
             currentSectionIndex.value = null  // 确保清除 loading 状态
             emit('update-status', 'completed')
             stopPolling()
             // 滚动逻辑统一在循环结束后的 nextTick 中处理
+          }
+
+          if (log.action === 'error') {
+            isFailed.value = true
+            currentSectionIndex.value = null
+            emit('update-status', 'error')
+            stopPolling()
           }
           
           if (log.action === 'report_start') {
@@ -2101,10 +2307,17 @@ const fetchConsoleLog = async () => {
 const startPolling = () => {
   if (agentLogTimer || consoleLogTimer) return
   
+  fetchSimulationTiming()
+  fetchReportSnapshot()
+  fetchGeneratedSections()
   fetchAgentLog()
   fetchConsoleLog()
   
-  agentLogTimer = setInterval(fetchAgentLog, 2000)
+  agentLogTimer = setInterval(() => {
+    fetchAgentLog()
+    fetchGeneratedSections()
+    fetchReportSnapshot()
+  }, 2000)
   consoleLogTimer = setInterval(fetchConsoleLog, 1500)
 }
 
@@ -2140,15 +2353,27 @@ watch(() => props.reportId, (newId) => {
     reportOutline.value = null
     currentSectionIndex.value = null
     generatedSections.value = {}
+    sectionBuffer.value = {}
     expandedContent.value = new Set()
     expandedLogs.value = new Set()
     collapsedSections.value = new Set()
     isComplete.value = false
+    isFailed.value = false
     startTime.value = null
+    simulationTiming.value = {
+      totalRounds: null,
+      minutesPerRound: null,
+      totalHours: null
+    }
     
+    fetchSimulationTiming()
     startPolling()
   }
 }, { immediate: true })
+
+watch(() => props.simulationId, () => {
+  fetchSimulationTiming()
+})
 </script>
 
 <style scoped>
@@ -2324,13 +2549,6 @@ watch(() => props.reportId, (newId) => {
   padding: 4px 8px;
   letter-spacing: 0.05em;
   text-transform: uppercase;
-}
-
-.report-id {
-  font-size: 11px;
-  color: #9CA3AF;
-  font-weight: 500;
-  letter-spacing: 0.02em;
 }
 
 .main-title {

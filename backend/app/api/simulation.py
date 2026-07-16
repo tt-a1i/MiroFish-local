@@ -3,20 +3,31 @@
 Step2: Zep实体读取与过滤、OASIS模拟准备与运行（全程自动化）
 """
 
+import json
 import os
 import traceback
-from flask import request, jsonify, send_file
+from flask import Response, request, jsonify, send_file, stream_with_context
 
 from . import simulation_bp
 from ..config import Config
 from ..services.zep_entity_reader import ZepEntityReader
 from ..services.oasis_profile_generator import OasisProfileGenerator
+from ..services.agent_dialogue_service import (
+    AgentDialogueError,
+    AgentDialogueService,
+    enrich_profile_for_dialogue,
+)
 from ..services.simulation_manager import SimulationManager, SimulationStatus
 from ..services.simulation_runner import SimulationRunner, RunnerStatus
+from ..services.zep_graph_memory_updater import ZepGraphMemoryUpdater
 from ..utils.logger import get_logger
 from ..models.project import ProjectManager
 
 logger = get_logger('mirofish.api.simulation')
+
+SIMULATION_MIN_ROUNDS = 8
+SIMULATION_MAX_ROUNDS = 72
+SIMULATION_ROUND_STEP = 8
 
 
 # Interview prompt 优化前缀
@@ -42,6 +53,101 @@ def optimize_interview_prompt(prompt: str) -> str:
     return f"{INTERVIEW_PROMPT_PREFIX}{prompt}"
 
 
+def validate_max_rounds(value):
+    """校验自定义模拟轮数：8 到 72 轮，且必须按 8 轮递增。"""
+    try:
+        max_rounds = int(value)
+    except (ValueError, TypeError):
+        raise ValueError("max_rounds 必须是有效的整数")
+
+    if max_rounds < SIMULATION_MIN_ROUNDS or max_rounds > SIMULATION_MAX_ROUNDS:
+        raise ValueError(f"max_rounds 必须在 {SIMULATION_MIN_ROUNDS}-{SIMULATION_MAX_ROUNDS} 之间")
+    if max_rounds % SIMULATION_ROUND_STEP != 0:
+        raise ValueError(f"max_rounds 必须是 {SIMULATION_ROUND_STEP} 的倍数")
+    return max_rounds
+
+
+def _resolve_graph_backend(graph_id: str):
+    """根据 graph_id 解析当前图谱实际使用的 backend。"""
+    project = ProjectManager.get_project_by_graph_id(graph_id)
+    backend = project.graph_backend if project and project.graph_backend else Config.ZEP_BACKEND
+    return backend, project
+
+
+def _resolve_graph_backend_or_404(graph_id: str):
+    """按 graph_id 解析项目与 backend，不允许静默回退到全局 backend。"""
+    project = ProjectManager.get_project_by_graph_id(graph_id)
+    if not project:
+        return None, None, (
+            jsonify({
+                "success": False,
+                "error": f"图谱未绑定到任何项目元数据: {graph_id}"
+            }),
+            404,
+        )
+    backend = project.graph_backend or Config.ZEP_BACKEND
+    return project, backend, None
+
+
+def _ensure_backend_available(backend: str):
+    """校验目标 backend 所需配置是否齐备。"""
+    if backend == 'cloud' and not Config.ZEP_API_KEY:
+        return jsonify({
+            "success": False,
+            "error": "ZEP_API_KEY未配置（cloud模式需要）"
+        }), 500
+    return None
+
+
+def _hydrate_simulation_graph_context(manager: SimulationManager, state):
+    """为旧 simulation state 补全 graph_id/backend，并回写持久化状态。"""
+    changed = False
+    project = ProjectManager.get_project(state.project_id)
+
+    if not state.graph_id and project and project.graph_id:
+        state.graph_id = project.graph_id
+        changed = True
+
+    if state.graph_id and not state.graph_backend:
+        resolved_backend, resolved_project = _resolve_graph_backend(state.graph_id)
+        state.graph_backend = resolved_backend
+        if not project:
+            project = resolved_project
+        changed = True
+
+    if changed:
+        manager._save_simulation_state(state)
+
+    return project
+
+
+def _has_simulation_requirement(state) -> bool:
+    """检查 simulation 对应项目是否已有 Step1 推演背景。"""
+    if not state:
+        return False
+    project = ProjectManager.get_project(state.project_id)
+    return bool(project and (project.simulation_requirement or "").strip())
+
+
+def _enrich_profiles_for_dialogue(profiles, simulation_id: str, platform: str, state=None):
+    """为 profile API 返回值补充 Step5 对话稳定身份字段。"""
+    has_requirement = _has_simulation_requirement(state)
+    return [
+        enrich_profile_for_dialogue(
+            profile,
+            simulation_id=simulation_id,
+            platform=platform,
+            has_simulation_requirement=has_requirement,
+        )
+        for profile in profiles
+    ]
+
+
+def _agent_chat_stream_event(event: str, **payload) -> str:
+    """编码 Step5 Agent Chat NDJSON 事件。"""
+    return json.dumps({"event": event, **payload}, ensure_ascii=False) + "\n"
+
+
 # ============== 实体读取接口 ==============
 
 @simulation_bp.route('/entities/<graph_id>', methods=['GET'])
@@ -56,19 +162,22 @@ def get_graph_entities(graph_id: str):
         enrich: 是否获取相关边信息（默认true）
     """
     try:
-        if Config.ZEP_BACKEND == 'cloud' and not Config.ZEP_API_KEY:
-            return jsonify({
-                "success": False,
-                "error": "ZEP_API_KEY未配置（cloud模式需要）"
-            }), 500
+        _, backend, error_response = _resolve_graph_backend_or_404(graph_id)
+        if error_response:
+            return error_response
+        backend_error = _ensure_backend_available(backend)
+        if backend_error:
+            return backend_error
 
         entity_types_str = request.args.get('entity_types', '')
         entity_types = [t.strip() for t in entity_types_str.split(',') if t.strip()] if entity_types_str else None
         enrich = request.args.get('enrich', 'true').lower() == 'true'
         
-        logger.info(f"获取图谱实体: graph_id={graph_id}, entity_types={entity_types}, enrich={enrich}")
-        
-        reader = ZepEntityReader()
+        logger.info(
+            f"获取图谱实体: graph_id={graph_id}, backend={backend}, "
+            f"entity_types={entity_types}, enrich={enrich}"
+        )
+        reader = ZepEntityReader(backend=backend)
         result = reader.filter_defined_entities(
             graph_id=graph_id,
             defined_entity_types=entity_types,
@@ -93,13 +202,14 @@ def get_graph_entities(graph_id: str):
 def get_entity_detail(graph_id: str, entity_uuid: str):
     """获取单个实体的详细信息"""
     try:
-        if Config.ZEP_BACKEND == 'cloud' and not Config.ZEP_API_KEY:
-            return jsonify({
-                "success": False,
-                "error": "ZEP_API_KEY未配置（cloud模式需要）"
-            }), 500
+        _, backend, error_response = _resolve_graph_backend_or_404(graph_id)
+        if error_response:
+            return error_response
+        backend_error = _ensure_backend_available(backend)
+        if backend_error:
+            return backend_error
 
-        reader = ZepEntityReader()
+        reader = ZepEntityReader(backend=backend)
         entity = reader.get_entity_with_context(graph_id, entity_uuid)
         
         if not entity:
@@ -126,15 +236,16 @@ def get_entity_detail(graph_id: str, entity_uuid: str):
 def get_entities_by_type(graph_id: str, entity_type: str):
     """获取指定类型的所有实体"""
     try:
-        if Config.ZEP_BACKEND == 'cloud' and not Config.ZEP_API_KEY:
-            return jsonify({
-                "success": False,
-                "error": "ZEP_API_KEY未配置（cloud模式需要）"
-            }), 500
+        _, backend, error_response = _resolve_graph_backend_or_404(graph_id)
+        if error_response:
+            return error_response
+        backend_error = _ensure_backend_available(backend)
+        if backend_error:
+            return backend_error
 
         enrich = request.args.get('enrich', 'true').lower() == 'true'
         
-        reader = ZepEntityReader()
+        reader = ZepEntityReader(backend=backend)
         entities = reader.get_entities_by_type(
             graph_id=graph_id,
             entity_type=entity_type,
@@ -194,6 +305,11 @@ def create_simulation():
         data = request.get_json() or {}
         
         project_id = data.get('project_id')
+        logger.info(
+            "收到 /api/simulation/create 请求: project_id=%s, graph_id=%s",
+            project_id,
+            data.get('graph_id')
+        )
         if not project_id:
             return jsonify({
                 "success": False,
@@ -213,13 +329,38 @@ def create_simulation():
                 "success": False,
                 "error": "项目尚未构建图谱，请先调用 /api/graph/build"
             }), 400
+
+        requested_graph_id = data.get('graph_id')
+        if requested_graph_id:
+            graph_project, resolved_backend, error_response = _resolve_graph_backend_or_404(graph_id)
+            if error_response:
+                return error_response
+            if graph_project.project_id != project_id:
+                return jsonify({
+                    "success": False,
+                    "error": f"graph_id 不属于当前项目: {graph_id}"
+                }), 400
+        else:
+            resolved_backend = project.graph_backend or Config.ZEP_BACKEND
+
+        backend_error = _ensure_backend_available(resolved_backend)
+        if backend_error:
+            return backend_error
         
         manager = SimulationManager()
         state = manager.create_simulation(
             project_id=project_id,
             graph_id=graph_id,
+            graph_backend=resolved_backend,
             enable_twitter=data.get('enable_twitter', True),
             enable_reddit=data.get('enable_reddit', True),
+        )
+        logger.info(
+            "/api/simulation/create 完成: simulation_id=%s, project_id=%s, graph_id=%s, backend=%s",
+            state.simulation_id,
+            state.project_id,
+            state.graph_id,
+            state.graph_backend,
         )
         
         return jsonify({
@@ -336,8 +477,14 @@ def _check_simulation_prepared(simulation_id: str) -> tuple:
             return True, {
                 "status": status,
                 "entities_count": state_data.get("entities_count", 0),
+                "expected_agents_count": state_data.get("entities_count", 0),
                 "profiles_count": profiles_count,
                 "entity_types": state_data.get("entity_types", []),
+                "verification_candidate_count": state_data.get("verification_candidate_count", 0),
+                "verification_verified_count": state_data.get("verification_verified_count", 0),
+                "verification_skipped_count": state_data.get("verification_skipped_count", 0),
+                "verification_skipped_entities": state_data.get("verification_skipped_entities", []),
+                "profile_provenance": state_data.get("profile_provenance", []),
                 "config_generated": config_generated,
                 "created_at": state_data.get("created_at"),
                 "updated_at": state_data.get("updated_at"),
@@ -381,6 +528,8 @@ def prepare_simulation():
             "entity_types": ["Student", "PublicFigure"],  // 可选，指定实体类型
             "use_llm_for_profiles": true,                 // 可选，是否用LLM生成人设
             "parallel_profile_count": 5,                  // 可选，并行生成人设数量，默认5
+            "use_real_profiles": true,                    // 可选，联网核验并增强真实资料，默认true
+            "strict_real_mode": false,                    // 可选，默认false；true时只生成verified实体
             "force_regenerate": false                     // 可选，强制重新生成，默认false
         }
     
@@ -445,12 +594,23 @@ def prepare_simulation():
                 logger.info(f"模拟 {simulation_id} 未准备完成，将启动准备任务")
         
         # 从项目获取必要信息
-        project = ProjectManager.get_project(state.project_id)
+        project = _hydrate_simulation_graph_context(manager, state)
         if not project:
             return jsonify({
                 "success": False,
                 "error": f"项目不存在: {state.project_id}"
             }), 404
+
+        if not state.graph_id:
+            return jsonify({
+                "success": False,
+                "error": "模拟缺少 graph_id，请先为项目构建图谱"
+            }), 400
+
+        read_backend = state.graph_backend or Config.ZEP_BACKEND
+        backend_error = _ensure_backend_available(read_backend)
+        if backend_error:
+            return backend_error
         
         # 获取模拟需求
         simulation_requirement = project.simulation_requirement or ""
@@ -466,12 +626,27 @@ def prepare_simulation():
         entity_types_list = data.get('entity_types')
         use_llm_for_profiles = data.get('use_llm_for_profiles', True)
         parallel_profile_count = data.get('parallel_profile_count', 5)
+        use_real_profiles = data.get('use_real_profiles', True)
+        strict_real_mode = data.get('strict_real_mode', False)
+        allow_group_agents = data.get('allow_group_agents', True)
+        min_source_count = data.get('min_source_count', 1)
+        logger.info(
+            "/api/simulation/prepare 参数: simulation_id=%s, project_id=%s, graph_id=%s, "
+            "use_real_profiles=%s, strict_real_mode=%s, allow_group_agents=%s, min_source_count=%s",
+            simulation_id,
+            state.project_id,
+            state.graph_id,
+            use_real_profiles,
+            strict_real_mode,
+            allow_group_agents,
+            min_source_count,
+        )
         
         # ========== 同步获取实体数量（在后台任务启动前） ==========
         # 这样前端在调用prepare后立即就能获取到预期Agent总数
         try:
             logger.info(f"同步获取实体数量: graph_id={state.graph_id}")
-            reader = ZepEntityReader()
+            reader = ZepEntityReader(backend=read_backend)
             # 快速读取实体（不需要边信息，只统计数量）
             filtered_preview = reader.filter_defined_entities(
                 graph_id=state.graph_id,
@@ -518,7 +693,8 @@ def prepare_simulation():
                     # 计算总进度
                     stage_weights = {
                         "reading": (0, 20),           # 0-20%
-                        "generating_profiles": (20, 70),  # 20-70%
+                        "verifying_entities": (20, 35),    # 20-35%
+                        "generating_profiles": (35, 70),  # 35-70%
                         "generating_config": (70, 90),    # 70-90%
                         "copying_scripts": (90, 100)       # 90-100%
                     }
@@ -529,6 +705,7 @@ def prepare_simulation():
                     # 构建详细进度信息
                     stage_names = {
                         "reading": "读取图谱实体",
+                        "verifying_entities": "验证真实实体",
                         "generating_profiles": "生成Agent人设",
                         "generating_config": "生成模拟配置",
                         "copying_scripts": "准备模拟脚本"
@@ -582,7 +759,11 @@ def prepare_simulation():
                     defined_entity_types=entity_types_list,
                     use_llm_for_profiles=use_llm_for_profiles,
                     progress_callback=progress_callback,
-                    parallel_profile_count=parallel_profile_count
+                    parallel_profile_count=parallel_profile_count,
+                    use_real_profiles=use_real_profiles,
+                    strict_real_mode=strict_real_mode,
+                    allow_group_agents=allow_group_agents,
+                    min_source_count=min_source_count,
                 )
                 
                 # 任务完成
@@ -615,7 +796,15 @@ def prepare_simulation():
                 "message": "准备任务已启动，请通过 /api/simulation/prepare/status 查询进度",
                 "already_prepared": False,
                 "expected_entities_count": state.entities_count,  # 预期的Agent总数
-                "entity_types": state.entity_types  # 实体类型列表
+                "expected_agents_count": state.entities_count,  # 预期的Agent总数（语义化字段）
+                "entity_types": state.entity_types,  # 实体类型列表
+                "use_real_profiles": use_real_profiles,
+                "strict_real_mode": strict_real_mode,
+                "allow_group_agents": allow_group_agents,
+                "min_source_count": min_source_count,
+                "verification_candidate_count": state.verification_candidate_count,
+                "verification_verified_count": state.verification_verified_count,
+                "verification_skipped_count": state.verification_skipped_count,
             }
         })
         
@@ -690,6 +879,8 @@ def get_prepare_status():
         if not task_id:
             if simulation_id:
                 # 有simulation_id但未准备完成
+                manager = SimulationManager()
+                state = manager.get_simulation(simulation_id)
                 return jsonify({
                     "success": True,
                     "data": {
@@ -697,7 +888,12 @@ def get_prepare_status():
                         "status": "not_started",
                         "progress": 0,
                         "message": "尚未开始准备，请调用 /api/simulation/prepare 开始",
-                        "already_prepared": False
+                        "already_prepared": False,
+                        "verification_candidate_count": state.verification_candidate_count if state else 0,
+                        "verification_verified_count": state.verification_verified_count if state else 0,
+                        "verification_skipped_count": state.verification_skipped_count if state else 0,
+                        "verification_skipped_entities": state.verification_skipped_entities if state else [],
+                        "profile_provenance": state.profile_provenance if state else [],
                     }
                 })
             return jsonify({
@@ -733,6 +929,15 @@ def get_prepare_status():
         
         task_dict = task.to_dict()
         task_dict["already_prepared"] = False
+        if simulation_id:
+            manager = SimulationManager()
+            state = manager.get_simulation(simulation_id)
+            if state:
+                task_dict["verification_candidate_count"] = state.verification_candidate_count
+                task_dict["verification_verified_count"] = state.verification_verified_count
+                task_dict["verification_skipped_count"] = state.verification_skipped_count
+                task_dict["verification_skipped_entities"] = state.verification_skipped_entities
+                task_dict["profile_provenance"] = state.profile_provenance
         
         return jsonify({
             "success": True,
@@ -773,6 +978,48 @@ def get_simulation(simulation_id: str):
         
     except Exception as e:
         logger.error(f"获取模拟状态失败: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
+
+@simulation_bp.route('/<simulation_id>', methods=['DELETE'])
+def delete_simulation(simulation_id: str):
+    """删除单条推演历史记录及其本地模拟文件。"""
+    try:
+        manager = SimulationManager()
+        state = manager.get_simulation(simulation_id)
+
+        if not state:
+            return jsonify({
+                "success": False,
+                "error": f"模拟不存在: {simulation_id}"
+            }), 404
+
+        if state.status in (SimulationStatus.PREPARING, SimulationStatus.RUNNING):
+            return jsonify({
+                "success": False,
+                "error": "推演正在准备或运行中，请先停止后再删除"
+            }), 409
+
+        deleted = manager.delete_simulation(simulation_id)
+        if not deleted:
+            return jsonify({
+                "success": False,
+                "error": f"模拟不存在: {simulation_id}"
+            }), 404
+
+        return jsonify({
+            "success": True,
+            "data": {
+                "simulation_id": simulation_id
+            }
+        })
+
+    except Exception as e:
+        logger.error(f"删除模拟历史记录失败: {str(e)}")
         return jsonify({
             "success": False,
             "error": str(e),
@@ -822,12 +1069,26 @@ def get_simulation_profiles(simulation_id: str):
         
         manager = SimulationManager()
         profiles = manager.get_profiles(simulation_id, platform=platform)
+        state = manager.get_simulation(simulation_id)
+        expected_agents_count = state.entities_count if state else None
+        profiles = _enrich_profiles_for_dialogue(
+            profiles,
+            simulation_id=simulation_id,
+            platform=platform,
+            state=state,
+        )
         
         return jsonify({
             "success": True,
             "data": {
                 "platform": platform,
                 "count": len(profiles),
+                "total_expected": expected_agents_count,
+                "expected_agents_count": expected_agents_count,
+                "verified_count": state.verification_verified_count if state else 0,
+                "skipped_count": state.verification_skipped_count if state else 0,
+                "skipped_entities": state.verification_skipped_entities if state else [],
+                "profile_provenance": state.profile_provenance if state else [],
                 "profiles": profiles
             }
         })
@@ -875,7 +1136,6 @@ def get_simulation_profiles_realtime(simulation_id: str):
             }
         }
     """
-    import json
     import csv
     from datetime import datetime
     
@@ -915,6 +1175,14 @@ def get_simulation_profiles_realtime(simulation_id: str):
                     with open(profiles_file, 'r', encoding='utf-8') as f:
                         reader = csv.DictReader(f)
                         profiles = list(reader)
+                    for row in profiles:
+                        for key in ("source_citations", "runtime_traits", "provenance"):
+                            value = row.get(key)
+                            if value:
+                                try:
+                                    row[key] = json.loads(value)
+                                except json.JSONDecodeError:
+                                    pass
             except (json.JSONDecodeError, Exception) as e:
                 logger.warning(f"读取 profiles 文件失败（可能正在写入中）: {e}")
                 profiles = []
@@ -922,6 +1190,10 @@ def get_simulation_profiles_realtime(simulation_id: str):
         # 检查是否正在生成（通过 state.json 判断）
         is_generating = False
         total_expected = None
+        verified_count = 0
+        skipped_count = 0
+        skipped_entities = []
+        profile_provenance = []
         
         state_file = os.path.join(sim_dir, "state.json")
         if os.path.exists(state_file):
@@ -931,8 +1203,24 @@ def get_simulation_profiles_realtime(simulation_id: str):
                     status = state_data.get("status", "")
                     is_generating = status == "preparing"
                     total_expected = state_data.get("entities_count")
+                    verified_count = state_data.get("verification_verified_count", 0)
+                    skipped_count = state_data.get("verification_skipped_count", 0)
+                    skipped_entities = state_data.get("verification_skipped_entities", [])
+                    profile_provenance = state_data.get("profile_provenance", [])
             except Exception:
                 pass
+
+        state = None
+        try:
+            state = SimulationManager().get_simulation(simulation_id)
+        except Exception:
+            state = None
+        profiles = _enrich_profiles_for_dialogue(
+            profiles,
+            simulation_id=simulation_id,
+            platform=platform,
+            state=state,
+        )
         
         return jsonify({
             "success": True,
@@ -941,6 +1229,11 @@ def get_simulation_profiles_realtime(simulation_id: str):
                 "platform": platform,
                 "count": len(profiles),
                 "total_expected": total_expected,
+                "expected_agents_count": total_expected,
+                "verified_count": verified_count,
+                "skipped_count": skipped_count,
+                "skipped_entities": skipped_entities,
+                "profile_provenance": profile_provenance,
                 "is_generating": is_generating,
                 "file_exists": file_exists,
                 "file_modified_at": file_modified_at,
@@ -954,6 +1247,90 @@ def get_simulation_profiles_realtime(simulation_id: str):
             "success": False,
             "error": str(e),
             "traceback": traceback.format_exc()
+        }), 500
+
+
+@simulation_bp.route('/<simulation_id>/agent-chat/stream', methods=['POST'])
+def stream_agent_chat(simulation_id: str):
+    """
+    Step5 人设 Agent 流式对话。
+
+    该接口只用于深入对话页面中的单人人设聊天。Step4 报告生成、ReportAgent
+    与 OASIS interview 仍走原有接口和模拟环境逻辑。
+    """
+    data = request.get_json() or {}
+    message = data.get("message", "")
+    chat_history = data.get("chat_history", [])
+    agent_key = data.get("agent_key", "")
+    user_id = data.get("user_id")
+    platform = data.get("platform", "reddit")
+
+    def generate():
+        try:
+            service = AgentDialogueService()
+            for event in service.stream_chat(
+                simulation_id=simulation_id,
+                message=message,
+                chat_history=chat_history,
+                agent_key=agent_key,
+                user_id=user_id,
+                platform=platform,
+            ):
+                yield json.dumps(event, ensure_ascii=False) + "\n"
+        except AgentDialogueError as exc:
+            yield _agent_chat_stream_event("error", error=str(exc), message=str(exc))
+        except Exception as exc:
+            logger.error("Step5 人设流式对话失败: %s", exc)
+            yield _agent_chat_stream_event(
+                "error",
+                error=str(exc),
+                message=str(exc),
+                traceback=traceback.format_exc(),
+            )
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="application/x-ndjson; charset=utf-8",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@simulation_bp.route('/<simulation_id>/agent-chat', methods=['POST'])
+def agent_chat(simulation_id: str):
+    """
+    Step5 人设 Agent 非流式对话。
+
+    主要用于自动化测试或不支持流式传输的降级场景。
+    """
+    try:
+        data = request.get_json() or {}
+        service = AgentDialogueService()
+        result = service.chat(
+            simulation_id=simulation_id,
+            message=data.get("message", ""),
+            chat_history=data.get("chat_history", []),
+            agent_key=data.get("agent_key", ""),
+            user_id=data.get("user_id"),
+            platform=data.get("platform", "reddit"),
+        )
+        return jsonify({
+            "success": True,
+            "data": result,
+        })
+    except AgentDialogueError as exc:
+        return jsonify({
+            "success": False,
+            "error": str(exc),
+        }), 400
+    except Exception as exc:
+        logger.error("Step5 人设对话失败: %s", exc)
+        return jsonify({
+            "success": False,
+            "error": str(exc),
+            "traceback": traceback.format_exc(),
         }), 500
 
 
@@ -1223,7 +1600,14 @@ def generate_profiles():
         use_llm = data.get('use_llm', True)
         platform = data.get('platform', 'reddit')
         
-        reader = ZepEntityReader()
+        _, backend, error_response = _resolve_graph_backend_or_404(graph_id)
+        if error_response:
+            return error_response
+        backend_error = _ensure_backend_available(backend)
+        if backend_error:
+            return backend_error
+
+        reader = ZepEntityReader(backend=backend)
         filtered = reader.filter_defined_entities(
             graph_id=graph_id,
             defined_entity_types=entity_types,
@@ -1236,7 +1620,10 @@ def generate_profiles():
                 "error": "没有找到符合条件的实体"
             }), 400
         
-        generator = OasisProfileGenerator()
+        generator = OasisProfileGenerator(
+            graph_id=graph_id,
+            graph_backend=backend,
+        )
         profiles = generator.generate_profiles_from_entities(
             entities=filtered.entities,
             use_llm=use_llm
@@ -1279,7 +1666,7 @@ def start_simulation():
         {
             "simulation_id": "sim_xxxx",          // 必填，模拟ID
             "platform": "parallel",                // 可选: twitter / reddit / parallel (默认)
-            "max_rounds": 100,                     // 可选: 最大模拟轮数，用于截断过长的模拟
+            "max_rounds": 24,                      // 可选: 最大模拟轮数，8-72且按8轮递增，默认推荐24轮
             "enable_graph_memory_update": false,   // 可选: 是否将Agent活动动态更新到Zep图谱记忆
             "force": false                         // 可选: 强制重新开始（会停止运行中的模拟并清理日志）
         }
@@ -1329,16 +1716,11 @@ def start_simulation():
         # 验证 max_rounds 参数
         if max_rounds is not None:
             try:
-                max_rounds = int(max_rounds)
-                if max_rounds <= 0:
-                    return jsonify({
-                        "success": False,
-                        "error": "max_rounds 必须是正整数"
-                    }), 400
-            except (ValueError, TypeError):
+                max_rounds = validate_max_rounds(max_rounds)
+            except ValueError as e:
                 return jsonify({
                     "success": False,
-                    "error": "max_rounds 必须是有效的整数"
+                    "error": str(e)
                 }), 400
 
         if platform not in ['twitter', 'reddit', 'parallel']:
@@ -1357,7 +1739,28 @@ def start_simulation():
                 "error": f"模拟不存在: {simulation_id}"
             }), 404
 
+        project = _hydrate_simulation_graph_context(manager, state)
+        if not project:
+            return jsonify({
+                "success": False,
+                "error": f"项目不存在: {state.project_id}"
+            }), 404
+
         force_restarted = False
+        if force:
+            run_state = SimulationRunner.get_run_state(simulation_id)
+            if run_state and run_state.runner_status in [RunnerStatus.RUNNING, RunnerStatus.STARTING]:
+                logger.info(f"强制模式：停止运行中的模拟 {simulation_id}")
+                try:
+                    SimulationRunner.stop_simulation(simulation_id)
+                except Exception as e:
+                    logger.warning(f"停止模拟时出现警告: {str(e)}")
+
+            logger.info(f"强制模式：清理模拟日志 {simulation_id}")
+            cleanup_result = SimulationRunner.cleanup_simulation_logs(simulation_id)
+            if not cleanup_result.get("success"):
+                logger.warning(f"清理日志时出现警告: {cleanup_result.get('errors')}")
+            force_restarted = True
         
         # 智能处理状态：如果准备工作已完成，允许重新启动
         if state.status != SimulationStatus.READY:
@@ -1371,26 +1774,11 @@ def start_simulation():
                     run_state = SimulationRunner.get_run_state(simulation_id)
                     if run_state and run_state.runner_status.value == "running":
                         # 进程确实在运行
-                        if force:
-                            # 强制模式：停止运行中的模拟
-                            logger.info(f"强制模式：停止运行中的模拟 {simulation_id}")
-                            try:
-                                SimulationRunner.stop_simulation(simulation_id)
-                            except Exception as e:
-                                logger.warning(f"停止模拟时出现警告: {str(e)}")
-                        else:
+                        if not force:
                             return jsonify({
                                 "success": False,
                                 "error": f"模拟正在运行中，请先调用 /stop 接口停止，或使用 force=true 强制重新开始"
                             }), 400
-
-                # 如果是强制模式，清理运行日志
-                if force:
-                    logger.info(f"强制模式：清理模拟日志 {simulation_id}")
-                    cleanup_result = SimulationRunner.cleanup_simulation_logs(simulation_id)
-                    if not cleanup_result.get("success"):
-                        logger.warning(f"清理日志时出现警告: {cleanup_result.get('errors')}")
-                    force_restarted = True
 
                 # 进程不存在或已结束，重置状态为 ready
                 logger.info(f"模拟 {simulation_id} 准备工作已完成，重置状态为 ready（原状态: {state.status.value}）")
@@ -1408,11 +1796,6 @@ def start_simulation():
         if enable_graph_memory_update:
             # 从模拟状态或项目中获取 graph_id
             graph_id = state.graph_id
-            if not graph_id:
-                # 尝试从项目中获取
-                project = ProjectManager.get_project(state.project_id)
-                if project:
-                    graph_id = project.graph_id
             
             if not graph_id:
                 return jsonify({
@@ -1423,12 +1806,14 @@ def start_simulation():
             logger.info(f"启用图谱记忆更新: simulation_id={simulation_id}, graph_id={graph_id}")
         
         # 启动模拟
+        graph_backend = state.graph_backend
         run_state = SimulationRunner.start_simulation(
             simulation_id=simulation_id,
             platform=platform,
             max_rounds=max_rounds,
             enable_graph_memory_update=enable_graph_memory_update,
-            graph_id=graph_id
+            graph_id=graph_id,
+            graph_backend=graph_backend,
         )
         
         # 更新模拟状态
@@ -1797,6 +2182,84 @@ def get_agent_stats(simulation_id: str):
         
     except Exception as e:
         logger.error(f"获取Agent统计失败: {str(e)}")
+        return jsonify({
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }), 500
+
+
+@simulation_bp.route('/<simulation_id>/graph-memory/replay', methods=['POST'])
+def replay_graph_memory_outbox(simulation_id: str):
+    """
+    重放图谱记忆写回 outbox 中的失败记录。
+
+    请求（JSON）：
+        {
+            "statuses": ["failed"],  // 可选，默认只重放 failed
+            "limit": 100             // 可选，限制本次重放数量
+        }
+    """
+    try:
+        data = request.get_json() or {}
+        statuses = data.get("statuses") or ["failed", "blocked"]
+        limit = data.get("limit")
+
+        if not isinstance(statuses, list) or not all(isinstance(s, str) for s in statuses):
+            return jsonify({
+                "success": False,
+                "error": "statuses 必须是字符串数组"
+            }), 400
+
+        if limit is not None:
+            try:
+                limit = int(limit)
+            except (ValueError, TypeError):
+                return jsonify({
+                    "success": False,
+                    "error": "limit 必须是整数"
+                }), 400
+            if limit <= 0:
+                limit = None
+
+        manager = SimulationManager()
+        state = manager.get_simulation(simulation_id)
+        if not state:
+            return jsonify({
+                "success": False,
+                "error": f"模拟不存在: {simulation_id}"
+            }), 404
+
+        _hydrate_simulation_graph_context(manager, state)
+        if not state.graph_id:
+            return jsonify({
+                "success": False,
+                "error": "模拟缺少 graph_id，无法重放图谱写回"
+            }), 400
+
+        backend = state.graph_backend or Config.ZEP_BACKEND
+        backend_error = _ensure_backend_available(backend)
+        if backend_error:
+            return backend_error
+
+        updater = ZepGraphMemoryUpdater(
+            state.graph_id,
+            backend=backend,
+            simulation_id=simulation_id,
+        )
+        result = updater.replay_failed_outbox(statuses=statuses, limit=limit)
+
+        return jsonify({
+            "success": (
+                result.get("failed", 0) == 0
+                and result.get("missing_payload", 0) == 0
+                and result.get("skipped", 0) == 0
+            ),
+            "data": result
+        })
+
+    except Exception as e:
+        logger.error(f"重放图谱记忆 outbox 失败: {str(e)}")
         return jsonify({
             "success": False,
             "error": str(e),
@@ -2181,13 +2644,6 @@ def interview_agents_batch():
                     "error": f"采访列表第{i+1}项的platform只能是 'twitter' 或 'reddit'"
                 }), 400
 
-        # 检查环境状态
-        if not SimulationRunner.check_env_alive(simulation_id):
-            return jsonify({
-                "success": False,
-                "error": "模拟环境未运行或已关闭。请确保模拟已完成并进入等待命令模式。"
-            }), 400
-
         # 优化每个采访项的prompt，添加前缀避免Agent调用工具
         optimized_interviews = []
         for interview in interviews:
@@ -2195,19 +2651,51 @@ def interview_agents_batch():
             optimized_interview['prompt'] = optimize_interview_prompt(interview.get('prompt', ''))
             optimized_interviews.append(optimized_interview)
 
-        result = SimulationRunner.interview_agents_batch(
-            simulation_id=simulation_id,
-            interviews=optimized_interviews,
-            platform=platform,
-            timeout=timeout
-        )
+        def run_profile_survey_fallback(reason: str):
+            return AgentDialogueService().interview_agents_from_profiles(
+                simulation_id=simulation_id,
+                interviews=optimized_interviews,
+                platform=platform or "reddit",
+                fallback_reason=reason,
+            )
+
+        if SimulationRunner.check_env_alive(simulation_id):
+            try:
+                result = SimulationRunner.interview_agents_batch(
+                    simulation_id=simulation_id,
+                    interviews=optimized_interviews,
+                    platform=platform,
+                    timeout=timeout
+                )
+                if not result.get("success", False):
+                    error_message = result.get("error") or "OASIS批量Interview返回失败"
+                    logger.warning(
+                        "OASIS批量Interview返回失败，切换到profile问卷: simulation_id=%s, error=%s",
+                        simulation_id,
+                        error_message,
+                    )
+                    result = run_profile_survey_fallback(error_message)
+            except (ValueError, TimeoutError) as e:
+                logger.warning(
+                    "OASIS批量Interview不可用，切换到profile问卷: simulation_id=%s, error=%s",
+                    simulation_id,
+                    str(e),
+                )
+                result = run_profile_survey_fallback(str(e))
+        else:
+            logger.info(
+                "模拟环境未运行，使用profile问卷降级: simulation_id=%s, count=%s",
+                simulation_id,
+                len(optimized_interviews),
+            )
+            result = run_profile_survey_fallback("模拟环境未运行或已关闭")
 
         return jsonify({
             "success": result.get("success", False),
             "data": result
         })
 
-    except ValueError as e:
+    except (ValueError, AgentDialogueError) as e:
         return jsonify({
             "success": False,
             "error": str(e)

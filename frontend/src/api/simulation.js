@@ -1,4 +1,5 @@
 import service, { requestWithRetry } from './index'
+import { streamNdjson } from './stream'
 
 /**
  * 创建模拟
@@ -10,7 +11,7 @@ export const createSimulation = (data) => {
 
 /**
  * 准备模拟环境（异步任务）
- * @param {Object} data - { simulation_id, entity_types?, use_llm_for_profiles?, parallel_profile_count?, force_regenerate? }
+ * @param {Object} data - { simulation_id, entity_types?, use_llm_for_profiles?, parallel_profile_count?, use_real_profiles?, strict_real_mode?, force_regenerate? }
  */
 export const prepareSimulation = (data) => {
   return requestWithRetry(() => service.post('/api/simulation/prepare', data), 3, 1000)
@@ -74,6 +75,14 @@ export const getSimulationConfigRealtime = (simulationId) => {
 export const listSimulations = (projectId) => {
   const params = projectId ? { project_id: projectId } : {}
   return service.get('/api/simulation/list', { params })
+}
+
+/**
+ * 删除单条推演历史记录
+ * @param {string} simulationId
+ */
+export const deleteSimulation = (simulationId) => {
+  return service.delete(`/api/simulation/${simulationId}`)
 }
 
 /**
@@ -176,3 +185,19 @@ export const interviewAgents = (data) => {
   return requestWithRetry(() => service.post('/api/simulation/interview/batch', data), 3, 1000)
 }
 
+/**
+ * Step5 人设 Agent 流式对话
+ * @param {string} simulationId
+ * @param {Object} data - { agent_key?, user_id?, platform?, message, chat_history? }
+ * @param {Object} handlers - { onEvent }
+ */
+export const streamAgentChat = (simulationId, data, handlers = {}) => {
+  return streamNdjson(`/api/simulation/${simulationId}/agent-chat/stream`, {
+    method: 'POST',
+    signal: handlers.signal,
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(data)
+  }, handlers)
+}

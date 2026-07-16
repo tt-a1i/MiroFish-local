@@ -50,7 +50,10 @@ def upload_and_generate_ontology(seed_path):
     print("\n🧠 正在生成本体（实体类型 & 关系类型）...")
     r = requests.post(
         f"{API_BASE}/graph/ontology/generate",
-        files={"file": (os.path.basename(seed_path), content, "text/plain")},
+        data={
+            "simulation_requirement": "分析该新闻事件的关键实体和关系，构建知识图谱用于模拟舆情传播",
+        },
+        files={"files": (os.path.basename(seed_path), content, "text/plain")},
         timeout=120,
     )
     r.raise_for_status()

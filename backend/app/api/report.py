@@ -6,17 +6,66 @@ Report API路由
 import os
 import traceback
 import threading
+import tempfile
 from flask import request, jsonify, send_file
 
 from . import report_bp
 from ..config import Config
-from ..services.report_agent import ReportAgent, ReportManager, ReportStatus
+from ..services.report_agent import ReportAgent, ReportContentSanitizer, ReportManager, ReportStatus
 from ..services.simulation_manager import SimulationManager
+from ..services.zep_tools import ZepToolsService
 from ..models.project import ProjectManager
 from ..models.task import TaskManager, TaskStatus
 from ..utils.logger import get_logger
 
 logger = get_logger('mirofish.api.report')
+
+
+def _attach_report_runtime_snapshot(report_dict: dict, report_id: str) -> dict:
+    """为报告详情附加生成中也可读取的章节与进度快照。"""
+    report_dict["generated_sections"] = ReportManager.get_generated_sections(report_id)
+    report_dict["progress_snapshot"] = ReportManager.get_progress(report_id)
+    return report_dict
+
+
+def _resolve_simulation_graph_context(manager: SimulationManager, state):
+    """解析并回填 simulation 绑定的 graph_id/backend。"""
+    project = ProjectManager.get_project(state.project_id)
+    changed = False
+
+    if not state.graph_id and project and project.graph_id:
+        state.graph_id = project.graph_id
+        changed = True
+
+    if state.graph_id and not state.graph_backend:
+        project_by_graph = ProjectManager.get_project_by_graph_id(state.graph_id)
+        if project_by_graph and project_by_graph.graph_backend:
+            state.graph_backend = project_by_graph.graph_backend
+        elif project and project.graph_backend:
+            state.graph_backend = project.graph_backend
+        else:
+            state.graph_backend = Config.ZEP_BACKEND
+        changed = True
+
+    if changed:
+        manager._save_simulation_state(state)
+
+    return project
+
+
+def _resolve_graph_backend_or_404(graph_id: str):
+    """调试类 graph_id 接口必须绑定到项目元数据，禁止静默回退默认 backend。"""
+    project = ProjectManager.get_project_by_graph_id(graph_id)
+    if not project:
+        return None, None, (
+            jsonify({
+                "success": False,
+                "error": f"图谱未绑定到任何项目元数据: {graph_id}"
+            }),
+            404,
+        )
+    backend = project.graph_backend or Config.ZEP_BACKEND
+    return project, backend, None
 
 
 # ============== 报告生成接口 ==============
@@ -84,14 +133,14 @@ def generate_report():
                 })
         
         # 获取项目信息
-        project = ProjectManager.get_project(state.project_id)
+        project = _resolve_simulation_graph_context(manager, state)
         if not project:
             return jsonify({
                 "success": False,
                 "error": f"项目不存在: {state.project_id}"
             }), 404
         
-        graph_id = state.graph_id or project.graph_id
+        graph_id = state.graph_id
         if not graph_id:
             return jsonify({
                 "success": False,
@@ -134,7 +183,10 @@ def generate_report():
                 agent = ReportAgent(
                     graph_id=graph_id,
                     simulation_id=simulation_id,
-                    simulation_requirement=simulation_requirement
+                    simulation_requirement=simulation_requirement,
+                    zep_tools=ZepToolsService(
+                        backend=state.graph_backend or Config.ZEP_BACKEND
+                    )
                 )
                 
                 # 进度回调
@@ -195,7 +247,7 @@ def generate_report():
         }), 500
 
 
-@report_bp.route('/generate/status', methods=['POST'])
+@report_bp.route('/generate/status', methods=['GET', 'POST'])
 def get_generate_status():
     """
     查询报告生成任务进度
@@ -218,10 +270,20 @@ def get_generate_status():
         }
     """
     try:
-        data = request.get_json() or {}
-        
-        task_id = data.get('task_id')
-        simulation_id = data.get('simulation_id')
+        if request.method == 'GET':
+            task_id = request.args.get('task_id')
+            simulation_id = request.args.get('simulation_id')
+            report_id = request.args.get('report_id')
+        else:
+            data = request.get_json() or {}
+            task_id = data.get('task_id')
+            simulation_id = data.get('simulation_id')
+            report_id = data.get('report_id')
+
+        if report_id and not simulation_id:
+            report = ReportManager.get_report(report_id)
+            if report:
+                simulation_id = report.simulation_id
         
         # 如果提供了simulation_id，先检查是否已有完成的报告
         if simulation_id:
@@ -299,7 +361,7 @@ def get_report(report_id: str):
         
         return jsonify({
             "success": True,
-            "data": report.to_dict()
+            "data": _attach_report_runtime_snapshot(report.to_dict(), report_id)
         })
         
     except Exception as e:
@@ -337,7 +399,7 @@ def get_report_by_simulation(simulation_id: str):
         
         return jsonify({
             "success": True,
-            "data": report.to_dict(),
+            "data": _attach_report_runtime_snapshot(report.to_dict(), report.report_id),
             "has_report": True
         })
         
@@ -407,22 +469,19 @@ def download_report(report_id: str):
             }), 404
         
         md_path = ReportManager._get_report_markdown_path(report_id)
+        if os.path.exists(md_path):
+            with open(md_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+        else:
+            content = report.markdown_content
         
-        if not os.path.exists(md_path):
-            # 如果MD文件不存在，生成一个临时文件
-            import tempfile
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False) as f:
-                f.write(report.markdown_content)
-                temp_path = f.name
-            
-            return send_file(
-                temp_path,
-                as_attachment=True,
-                download_name=f"{report_id}.md"
-            )
-        
+        content = ReportContentSanitizer.clean_report_content(content)
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False, encoding='utf-8') as f:
+            f.write(content)
+            temp_path = f.name
+
         return send_file(
-            md_path,
+            temp_path,
             as_attachment=True,
             download_name=f"{report_id}.md"
         )
@@ -520,14 +579,14 @@ def chat_with_report_agent():
                 "error": f"模拟不存在: {simulation_id}"
             }), 404
         
-        project = ProjectManager.get_project(state.project_id)
+        project = _resolve_simulation_graph_context(manager, state)
         if not project:
             return jsonify({
                 "success": False,
                 "error": f"项目不存在: {state.project_id}"
             }), 404
         
-        graph_id = state.graph_id or project.graph_id
+        graph_id = state.graph_id
         if not graph_id:
             return jsonify({
                 "success": False,
@@ -540,7 +599,10 @@ def chat_with_report_agent():
         agent = ReportAgent(
             graph_id=graph_id,
             simulation_id=simulation_id,
-            simulation_requirement=simulation_requirement
+            simulation_requirement=simulation_requirement,
+            zep_tools=ZepToolsService(
+                backend=state.graph_backend or Config.ZEP_BACKEND
+            )
         )
         
         result = agent.chat(message=message, chat_history=chat_history)
@@ -639,6 +701,7 @@ def get_report_sections(report_id: str):
             "data": {
                 "report_id": report_id,
                 "sections": sections,
+                "progress_snapshot": ReportManager.get_progress(report_id),
                 "total_sections": len(sections),
                 "is_complete": is_complete
             }
@@ -677,7 +740,7 @@ def get_single_section(report_id: str, section_index: int):
             }), 404
         
         with open(section_path, 'r', encoding='utf-8') as f:
-            content = f.read()
+            content = ReportContentSanitizer.clean_report_content(f.read())
         
         return jsonify({
             "success": True,
@@ -953,8 +1016,10 @@ def search_graph_tool():
             }), 400
         
         from ..services.zep_tools import ZepToolsService
-        
-        tools = ZepToolsService()
+        project, backend, error_response = _resolve_graph_backend_or_404(graph_id)
+        if error_response:
+            return error_response
+        tools = ZepToolsService(backend=backend)
         result = tools.search_graph(
             graph_id=graph_id,
             query=query,
@@ -997,8 +1062,10 @@ def get_graph_statistics_tool():
             }), 400
         
         from ..services.zep_tools import ZepToolsService
-        
-        tools = ZepToolsService()
+        project, backend, error_response = _resolve_graph_backend_or_404(graph_id)
+        if error_response:
+            return error_response
+        tools = ZepToolsService(backend=backend)
         result = tools.get_graph_statistics(graph_id)
         
         return jsonify({

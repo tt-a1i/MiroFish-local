@@ -1,9 +1,17 @@
 <template>
   <div class="main-view">
+    <WorkflowTopbar
+      :currentStep="3"
+      :projectId="projectData?.project_id"
+      :simulationId="currentSimulationId"
+      :reportId="currentReportId"
+      @missing-report="handleMissingReportNavigation"
+    />
+
     <!-- Header -->
     <header class="app-header">
       <div class="header-left">
-        <div class="brand" @click="router.push('/')">MIROFISH</div>
+        <span class="event-title">{{ projectTitle }}</span>
       </div>
       
       <div class="header-center">
@@ -15,7 +23,7 @@
             :class="{ active: viewMode === mode }"
             @click="viewMode = mode"
           >
-            {{ { graph: '图谱', split: '双栏', workbench: '工作台' }[mode] }}
+            {{ { graph: '群体', split: '双栏', workbench: '工作台' }[mode] }}
           </button>
         </div>
       </div>
@@ -26,10 +34,7 @@
           <span class="step-name">开始模拟</span>
         </div>
         <div class="step-divider"></div>
-        <span class="status-indicator" :class="statusClass">
-          <span class="dot"></span>
-          {{ statusText }}
-        </span>
+        <span class="status-indicator">{{ statusText }}</span>
       </div>
     </header>
 
@@ -71,8 +76,11 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import GraphPanel from '../components/GraphPanel.vue'
 import Step3Simulation from '../components/Step3Simulation.vue'
+import WorkflowTopbar from '../components/WorkflowTopbar.vue'
 import { getProject, getGraphData } from '../api/graph'
 import { getSimulation, getSimulationConfig, stopSimulation, closeSimulationEnv, getEnvStatus } from '../api/simulation'
+import { checkReportStatus } from '../api/report'
+import { getProjectDisplayTitle } from '../utils/projectTitle.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -87,9 +95,10 @@ const viewMode = ref('split')
 
 // Data State
 const currentSimulationId = ref(route.params.simulationId)
+const currentReportId = ref('')
 // 直接在初始化时从 query 参数获取 maxRounds，确保子组件能立即获取到值
 const maxRounds = ref(route.query.maxRounds ? parseInt(route.query.maxRounds) : null)
-const minutesPerRound = ref(30) // 默认每轮30分钟
+const minutesPerRound = ref(60) // 默认每轮1小时
 const projectData = ref(null)
 const graphData = ref(null)
 const graphLoading = ref(false)
@@ -110,17 +119,17 @@ const rightPanelStyle = computed(() => {
 })
 
 // --- Status Computed ---
-const statusClass = computed(() => {
-  return currentStatus.value
-})
-
 const statusText = computed(() => {
-  if (currentStatus.value === 'error') return 'Error'
-  if (currentStatus.value === 'completed') return 'Completed'
-  return 'Running'
+  if (currentStatus.value === 'error') return '错误'
+  if (currentStatus.value === 'completed') return '已完成'
+  return '运行中'
 })
 
 const isSimulating = computed(() => currentStatus.value === 'processing')
+
+const projectTitle = computed(() => {
+  return getProjectDisplayTitle(projectData.value)
+})
 
 // --- Helpers ---
 const addLog = (msg) => {
@@ -133,6 +142,31 @@ const addLog = (msg) => {
 
 const updateStatus = (status) => {
   currentStatus.value = status
+}
+
+const loadReportContext = async () => {
+  if (!currentSimulationId.value) {
+    currentReportId.value = ''
+    return
+  }
+  try {
+    const res = await checkReportStatus(currentSimulationId.value)
+    currentReportId.value = res.success && res.data?.report_id ? res.data.report_id : ''
+  } catch (err) {
+    currentReportId.value = ''
+  }
+}
+
+const handleMissingReportNavigation = async (targetStep) => {
+  await loadReportContext()
+  if (currentReportId.value) {
+    router.push({
+      name: targetStep === 5 ? 'Interaction' : 'Report',
+      params: { reportId: currentReportId.value }
+    })
+  } else {
+    addLog('当前模拟尚未生成报告，无法跳转到报告或深入对话。')
+  }
 }
 
 // --- Layout Methods ---
@@ -230,6 +264,7 @@ const loadSimulationData = async () => {
           if (projRes.data.graph_id) {
             await loadGraph(projRes.data.graph_id)
           }
+          await loadReportContext()
         }
       }
     } else {
@@ -322,21 +357,38 @@ onUnmounted(() => {
 
 /* Header */
 .app-header {
-  height: 60px;
+  min-height: 60px;
+  height: auto;
   border-bottom: 1px solid #EAEAEA;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(180px, 1fr);
   align-items: center;
-  justify-content: space-between;
-  padding: 0 24px;
+  column-gap: 18px;
+  padding: 10px 24px;
   background: #FFF;
   z-index: 100;
   position: relative;
 }
 
+.header-left {
+  min-width: 0;
+  max-width: min(42vw, 720px);
+}
+
+.event-title {
+  color: #1A1A2E;
+  display: block;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.45;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
 .header-center {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
+  justify-self: center;
+  min-width: max-content;
 }
 
 .brand {
@@ -376,7 +428,9 @@ onUnmounted(() => {
 .header-right {
   display: flex;
   align-items: center;
+  justify-self: end;
   gap: 16px;
+  white-space: nowrap;
 }
 
 .workflow-step {
@@ -412,18 +466,28 @@ onUnmounted(() => {
   font-weight: 500;
 }
 
-.dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #CCC;
+@media (max-width: 960px) {
+  .app-header {
+    grid-template-columns: 1fr;
+    gap: 10px;
+    align-items: stretch;
+    padding: 12px 16px;
+  }
+
+  .header-center,
+  .header-right {
+    justify-self: start;
+  }
+
+  .header-left {
+    max-width: 100%;
+  }
+
+  .header-right {
+    flex-wrap: wrap;
+    white-space: normal;
+  }
 }
-
-.status-indicator.processing .dot { background: #FF5722; animation: pulse 1s infinite; }
-.status-indicator.completed .dot { background: #4CAF50; }
-.status-indicator.error .dot { background: #F44336; }
-
-@keyframes pulse { 50% { opacity: 0.5; } }
 
 /* Content */
 .content-area {
@@ -444,4 +508,3 @@ onUnmounted(() => {
   border-right: 1px solid #EAEAEA;
 }
 </style>
-

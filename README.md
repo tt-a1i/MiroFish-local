@@ -71,7 +71,7 @@ flowchart LR
 
 ## 🔄 工作流程
 
-1. **图谱构建** — 现实种子提取 & 个体与群体记忆注入 & GraphRAG 构建。系统从用户上传的种子材料中抽取关键实体与关系，构建结构化知识图谱，为仿真世界奠定信息基础。
+1. **图谱构建** — 现实事件提取 & 个体与群体记忆注入 & GraphRAG 构建。系统从用户上传的种子材料中抽取关键实体与关系，构建结构化知识图谱，为仿真世界奠定信息基础。
 
 2. **环境搭建** — 实体关系抽取 & 人设生成 & 环境配置 Agent 注入仿真参数。基于图谱自动生成具有独立人格和背景故事的智能体，配置社交网络拓扑与初始行为参数。
 
@@ -152,24 +152,58 @@ ZEP_API_KEY=your_zep_api_key
 
 ```env
 NEO4J_URI=bolt://localhost:7687
+# 使用仓库内置 docker-compose 的 Neo4j 服务时，用户名固定为 neo4j，不要改成自定义用户。
 NEO4J_USER=neo4j
+# Neo4j 初始密码至少 8 位；建议只使用字母、数字、下划线、连字符和点，避免 Compose 解析特殊字符。
 NEO4J_PASSWORD=password
 
 # Graphiti 使用的 LLM 模型（推荐显式配置）
 GRAPHITI_LLM_MODEL=qwen3-max
 GRAPHITI_EMBEDDING_MODEL=text-embedding-v4
+
+# Graphiti embedding 独立配置（可选）
+# 留空时继续复用 LLM_API_KEY / LLM_BASE_URL；接入内网 embedding-only 服务时只配置这里
+GRAPHITI_EMBEDDING_API_KEY=
+GRAPHITI_EMBEDDING_BASE_URL=
+GRAPHITI_EMBEDDING_DIM=1024
+GRAPHITI_EMBEDDING_BATCH_SIZE=10
 ```
 
 > `OPENAI_API_KEY` / `OPENAI_BASE_URL` 会自动从 `LLM_API_KEY` / `LLM_BASE_URL` 映射，无需重复配置。如需单独指定 Graphiti 使用的 LLM，可显式设置 `OPENAI_API_KEY` 和 `OPENAI_BASE_URL`。
+> 如果只想替换 Graphiti 的 embedding 能力，请使用 `GRAPHITI_EMBEDDING_BASE_URL`，不要修改 `OPENAI_BASE_URL`，否则可能影响 Graphiti 的实体/关系抽取 LLM。
+
+接入内网 Qwen3 embedding 服务示例：
+
+```env
+GRAPHITI_EMBEDDING_BASE_URL=http://10.200.89.13:9997/v1
+GRAPHITI_EMBEDDING_API_KEY=
+GRAPHITI_EMBEDDING_MODEL=Qwen3-Embedding-4B
+GRAPHITI_EMBEDDING_DIM=2560
+GRAPHITI_EMBEDDING_BATCH_SIZE=32
+```
 
 #### 加速 LLM 配置（可选）
 
-可配置独立的加速 LLM 用于提升特定环节的处理速度：
+可配置独立的加速 LLM 用于提升图谱构建、Agent 人设生成、模拟配置生成和报告生成等 LLM 密集环节的处理速度。未配置时系统会自动回退 `LLM_*` 默认模型。
 
 ```env
 LLM_BOOST_API_KEY=your_boost_api_key
 LLM_BOOST_BASE_URL=https://another-api-provider.com/v1
 LLM_BOOST_MODEL_NAME=gpt-4o-mini
+
+# 并发加速（按服务商限流能力调节；Graphiti 本地默认关闭 bulk，避免尾批越来越慢）
+GRAPH_BUILD_CONCURRENCY=2
+GRAPHITI_EPISODE_BATCH_SIZE=1
+GRAPHITI_INGEST_CONCURRENCY=2
+GRAPHITI_USE_BULK_INGEST=false
+GRAPHITI_LLM_CONCURRENCY=2
+GRAPHITI_LLM_MAX_TOKENS=4096
+GRAPHITI_EMBEDDING_MIN_INTERVAL_SECONDS=0.5
+REAL_ENTITY_RESOLVE_CONCURRENCY=3
+PROFILE_GENERATION_CONCURRENCY=5
+SIMULATION_CONFIG_CONCURRENCY=3
+REPORT_TOOL_CONCURRENCY=3
+REPORT_SECTION_CONCURRENCY=2
 ```
 
 ### 2. 启动依赖服务（可选，仅本地模式）
@@ -186,11 +220,14 @@ docker-compose -f docker-compose.local.yml ps
 # Neo4j Browser 可通过 http://localhost:7474 访问（用户名: neo4j, 密码: password）
 ```
 
+> 使用仓库内置 `docker-compose.yml` / `docker-compose.local.yml` 时，Neo4j 用户名固定为 `neo4j`。如果改过 `.env` 的 `NEO4J_PASSWORD`，需要在首次初始化前清理旧的 `neo4j_data` 卷；密码过短或包含 `/`、`$`、空格、`#` 等容易被 Compose 或 Neo4j 初始化解析出错的字符时，Neo4j 容器可能会直接重启。
+
 ### 3. 安装依赖
 
 ```bash
-# 一键安装所有依赖（根目录 + 前端 + 后端）
-npm run setup:all
+# Graphiti 本地模式推荐：安装前端依赖 + 后端 Graphiti 依赖
+npm run setup
+npm run setup:backend:graphiti
 ```
 
 或者分步安装：
@@ -199,9 +236,14 @@ npm run setup:all
 # 安装 Node 依赖（根目录 + 前端）
 npm run setup
 
-# 安装 Python 依赖（自动创建虚拟环境）
-npm run setup:backend
+# 安装后端 Graphiti 依赖（自动创建 .venv）
+npm run setup:backend:graphiti
+
+# 安装 OASIS 独立模拟环境（自动创建 backend/.venv-simulation）
+npm run setup:simulation
 ```
+
+> 说明：`graphiti` 和 `oasis` 依赖的 `neo4j` 版本冲突，不能装在同一个虚拟环境里。仓库现在使用主环境 `.venv` 跑后端，使用独立环境 `.venv-simulation` 跑双平台模拟。
 
 ### 4. 启动服务
 
@@ -220,6 +262,32 @@ npm run dev
 npm run backend   # 仅启动后端
 npm run frontend  # 仅启动前端
 ```
+  按顺序直接执行：
+
+  cp .env.local.example .env
+
+  编辑 .env，填好 LLM_API_KEY。
+
+  docker compose -f docker-compose.local.yml up -d
+  docker compose -f docker-compose.local.yml ps
+
+  npm install
+  cd frontend && npm install && cd ..
+
+  cd backend
+  uv sync --extra graphiti
+  sh scripts/setup_simulation_env.sh
+  uv run python run.py
+
+  新终端：
+
+  cd frontend
+  npm run dev
+
+  如果安装模拟环境时网络较慢，可先提高超时再执行：
+
+  UV_HTTP_TIMEOUT=300 npm run setup:simulation
+
 
 ## 💻 硬件需求
 
@@ -245,8 +313,9 @@ Cloud 模式使用 Zep Cloud 云服务存储记忆和知识图谱，配置简单
 
 1. 确认 Docker 已安装并运行：`docker --version`
 2. 检查端口 7474/7687 是否被占用：`lsof -i :7474`
-3. 查看容器日志：`docker-compose -f docker-compose.local.yml logs neo4j`
-4. 尝试清理重启：`docker-compose -f docker-compose.local.yml down -v && docker-compose -f docker-compose.local.yml up -d`
+3. 查看容器日志：`docker-compose logs --tail=120 neo4j`
+4. 确认 `.env` 中 `NEO4J_USER=neo4j`，且 `NEO4J_PASSWORD` 至少 8 位并避免 `/`、`$`、空格、`#` 等特殊字符
+5. 如果允许清空本地图谱数据，再执行：`docker-compose down -v && docker-compose up -d`
 </details>
 
 <details>

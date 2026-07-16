@@ -9,7 +9,7 @@
             <svg class="platform-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
             </svg>
-            <span class="platform-name">Info Plaza</span>
+            <span class="platform-name">信息广场</span>
             <span v-if="runStatus.twitter_completed" class="status-badge">
               <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="3">
                 <polyline points="20 6 9 17 4 12"></polyline>
@@ -18,28 +18,32 @@
           </div>
           <div class="platform-stats">
             <span class="stat">
-              <span class="stat-label">ROUND</span>
+              <span class="stat-label">轮次</span>
               <span class="stat-value mono">{{ runStatus.twitter_current_round || 0 }}<span class="stat-total">/{{ runStatus.total_rounds || maxRounds || '-' }}</span></span>
             </span>
             <span class="stat">
-              <span class="stat-label">Elapsed Time</span>
+              <span class="stat-label">模拟时间</span>
               <span class="stat-value mono">{{ twitterElapsedTime }}</span>
             </span>
             <span class="stat">
-              <span class="stat-label">ACTS</span>
+              <span class="stat-label">动作</span>
               <span class="stat-value mono">{{ runStatus.twitter_actions_count || 0 }}</span>
             </span>
           </div>
           <!-- 可用动作提示 -->
           <div class="actions-tooltip">
-            <div class="tooltip-title">Available Actions</div>
+            <div class="tooltip-title">可用动作</div>
             <div class="tooltip-actions">
-              <span class="tooltip-action">POST</span>
-              <span class="tooltip-action">LIKE</span>
-              <span class="tooltip-action">REPOST</span>
-              <span class="tooltip-action">QUOTE</span>
-              <span class="tooltip-action">FOLLOW</span>
-              <span class="tooltip-action">IDLE</span>
+              <span
+                v-for="actionType in twitterAvailableActions"
+                :key="actionType"
+                class="tooltip-action"
+                :class="getActionTypeClass(actionType)"
+                :title="getActionTypeDescription(actionType)"
+              >
+                <ActionIcon :type="actionType" :size="11" />
+                <span>{{ getActionTypeLabel(actionType) }}</span>
+              </span>
             </div>
           </div>
         </div>
@@ -50,7 +54,7 @@
             <svg class="platform-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path>
             </svg>
-            <span class="platform-name">Topic Community</span>
+            <span class="platform-name">话题社区</span>
             <span v-if="runStatus.reddit_completed" class="status-badge">
               <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="3">
                 <polyline points="20 6 9 17 4 12"></polyline>
@@ -59,38 +63,45 @@
           </div>
           <div class="platform-stats">
             <span class="stat">
-              <span class="stat-label">ROUND</span>
+              <span class="stat-label">轮次</span>
               <span class="stat-value mono">{{ runStatus.reddit_current_round || 0 }}<span class="stat-total">/{{ runStatus.total_rounds || maxRounds || '-' }}</span></span>
             </span>
             <span class="stat">
-              <span class="stat-label">Elapsed Time</span>
+              <span class="stat-label">模拟时间</span>
               <span class="stat-value mono">{{ redditElapsedTime }}</span>
             </span>
             <span class="stat">
-              <span class="stat-label">ACTS</span>
+              <span class="stat-label">动作</span>
               <span class="stat-value mono">{{ runStatus.reddit_actions_count || 0 }}</span>
             </span>
           </div>
           <!-- 可用动作提示 -->
           <div class="actions-tooltip">
-            <div class="tooltip-title">Available Actions</div>
+            <div class="tooltip-title">可用动作</div>
             <div class="tooltip-actions">
-              <span class="tooltip-action">POST</span>
-              <span class="tooltip-action">COMMENT</span>
-              <span class="tooltip-action">LIKE</span>
-              <span class="tooltip-action">DISLIKE</span>
-              <span class="tooltip-action">SEARCH</span>
-              <span class="tooltip-action">TREND</span>
-              <span class="tooltip-action">FOLLOW</span>
-              <span class="tooltip-action">MUTE</span>
-              <span class="tooltip-action">REFRESH</span>
-              <span class="tooltip-action">IDLE</span>
+              <span
+                v-for="actionType in redditAvailableActions"
+                :key="actionType"
+                class="tooltip-action"
+                :class="getActionTypeClass(actionType)"
+                :title="getActionTypeDescription(actionType)"
+              >
+                <ActionIcon :type="actionType" :size="11" />
+                <span>{{ getActionTypeLabel(actionType) }}</span>
+              </span>
             </div>
           </div>
         </div>
       </div>
 
       <div class="action-controls">
+        <button
+          class="action-btn secondary"
+          :disabled="isStarting || isGeneratingReport"
+          @click="restartSimulation"
+        >
+          {{ isStarting ? '启动中...' : '重新推演' }}
+        </button>
         <button 
           class="action-btn primary"
           :disabled="phase !== 2 || isGeneratingReport"
@@ -108,7 +119,7 @@
       <!-- Timeline Header -->
       <div class="timeline-header" v-if="allActions.length > 0">
         <div class="timeline-stats">
-          <span class="total-count">TOTAL EVENTS: <span class="mono">{{ allActions.length }}</span></span>
+          <span class="total-count">事件总数: <span class="mono">{{ allActions.length }}</span></span>
           <span class="platform-breakdown">
             <span class="breakdown-item twitter">
               <svg class="mini-icon" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>
@@ -146,12 +157,18 @@
                 </div>
                 
                 <div class="header-meta">
+                  <span
+                    class="action-chip"
+                    :class="getActionTypeClass(action.action_type)"
+                    :title="getActionTypeDescription(action.action_type)"
+                    :aria-label="`动作：${getActionTypeLabel(action.action_type)}`"
+                  >
+                    <ActionIcon :type="action.action_type" :size="13" />
+                    <span>{{ getActionTypeLabel(action.action_type) }}</span>
+                  </span>
                   <div class="platform-indicator">
                     <svg v-if="action.platform === 'twitter'" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>
                     <svg v-else viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path></svg>
-                  </div>
-                  <div class="action-badge" :class="getActionTypeClass(action.action_type)">
-                    {{ getActionTypeLabel(action.action_type) }}
                   </div>
                 </div>
               </div>
@@ -182,18 +199,18 @@
                 <template v-if="action.action_type === 'REPOST'">
                   <div class="repost-info">
                     <svg class="icon-small" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="17 1 21 5 17 9"></polyline><path d="M3 11V9a4 4 0 0 1 4-4h14"></path><polyline points="7 23 3 19 7 15"></polyline><path d="M21 13v2a4 4 0 0 1-4 4H3"></path></svg>
-                    <span class="repost-label">Reposted from @{{ action.action_args?.original_author_name || 'User' }}</span>
+                    <span class="repost-label">转自 @{{ action.action_args?.original_author_name || '用户' }}</span>
                   </div>
                   <div v-if="action.action_args?.original_content" class="repost-content">
                     {{ truncateContent(action.action_args.original_content, 200) }}
                   </div>
                 </template>
 
-                <!-- LIKE_POST: 点赞帖子 -->
-                <template v-if="action.action_type === 'LIKE_POST'">
+                <!-- LIKE_POST / DISLIKE_POST: 点赞或踩帖子 -->
+                <template v-if="action.action_type === 'LIKE_POST' || action.action_type === 'DISLIKE_POST'">
                   <div class="like-info">
-                    <svg class="icon-small filled" viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path></svg>
-                    <span class="like-label">Liked @{{ action.action_args?.post_author_name || 'User' }}'s post</span>
+                    <ActionIcon :type="action.action_type" :size="14" />
+                    <span class="like-label">{{ action.action_type === 'LIKE_POST' ? '赞了' : '踩了' }} @{{ action.action_args?.post_author_name || '用户' }} 的帖子</span>
                   </div>
                   <div v-if="action.action_args?.post_content" class="liked-content">
                     "{{ truncateContent(action.action_args.post_content, 120) }}"
@@ -207,16 +224,27 @@
                   </div>
                   <div v-if="action.action_args?.post_id" class="comment-context">
                     <svg class="icon-small" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path></svg>
-                    <span>Reply to post #{{ action.action_args.post_id }}</span>
+                    <span>回复帖子 #{{ action.action_args.post_id }}</span>
                   </div>
                 </template>
 
-                <!-- SEARCH_POSTS: 搜索帖子 -->
-                <template v-if="action.action_type === 'SEARCH_POSTS'">
+                <!-- LIKE_COMMENT / DISLIKE_COMMENT: 评论互动 -->
+                <template v-if="action.action_type === 'LIKE_COMMENT' || action.action_type === 'DISLIKE_COMMENT'">
+                  <div class="like-info">
+                    <ActionIcon :type="action.action_type" :size="14" />
+                    <span class="like-label">{{ action.action_type === 'LIKE_COMMENT' ? '赞了' : '踩了' }} @{{ action.action_args?.comment_author_name || '用户' }} 的评论</span>
+                  </div>
+                  <div v-if="action.action_args?.comment_content" class="liked-content">
+                    "{{ truncateContent(action.action_args.comment_content, 120) }}"
+                  </div>
+                </template>
+
+                <!-- SEARCH_POSTS / SEARCH_USER: 搜索 -->
+                <template v-if="action.action_type === 'SEARCH_POSTS' || action.action_type === 'SEARCH_USER'">
                   <div class="search-info">
-                    <svg class="icon-small" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
-                    <span class="search-label">Search Query:</span>
-                    <span class="search-query">"{{ action.action_args?.query || '' }}"</span>
+                    <ActionIcon :type="action.action_type" :size="14" />
+                    <span class="search-label">{{ action.action_type === 'SEARCH_USER' ? '搜索用户:' : '搜索查询:' }}</span>
+                    <span class="search-query">"{{ getActionQuery(action) }}"</span>
                   </div>
                 </template>
 
@@ -224,7 +252,23 @@
                 <template v-if="action.action_type === 'FOLLOW'">
                   <div class="follow-info">
                     <svg class="icon-small" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="8.5" cy="7" r="4"></circle><line x1="20" y1="8" x2="20" y2="14"></line><line x1="23" y1="11" x2="17" y2="11"></line></svg>
-                    <span class="follow-label">Followed @{{ action.action_args?.target_user || action.action_args?.user_id || 'User' }}</span>
+                    <span class="follow-label">关注了 @{{ getTargetUserName(action) }}</span>
+                  </div>
+                </template>
+
+                <!-- MUTE: 静音用户 -->
+                <template v-if="action.action_type === 'MUTE'">
+                  <div class="follow-info">
+                    <ActionIcon :type="action.action_type" :size="14" />
+                    <span class="follow-label">静音了 @{{ getTargetUserName(action) }}</span>
+                  </div>
+                </template>
+
+                <!-- TREND / REFRESH: 浏览信息流动作 -->
+                <template v-if="action.action_type === 'TREND' || action.action_type === 'REFRESH'">
+                  <div class="search-info">
+                    <ActionIcon :type="action.action_type" :size="14" />
+                    <span class="search-label">{{ getActionTypeDescription(action.action_type) }}</span>
                   </div>
                 </template>
 
@@ -233,7 +277,7 @@
                   <div class="vote-info">
                     <svg v-if="action.action_type === 'UPVOTE_POST'" class="icon-small" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="18 15 12 9 6 15"></polyline></svg>
                     <svg v-else class="icon-small" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
-                    <span class="vote-label">{{ action.action_type === 'UPVOTE_POST' ? 'Upvoted' : 'Downvoted' }} Post</span>
+                    <span class="vote-label">{{ action.action_type === 'UPVOTE_POST' ? '赞了' : '踩了' }}帖子</span>
                   </div>
                   <div v-if="action.action_args?.post_content" class="voted-content">
                     "{{ truncateContent(action.action_args.post_content, 120) }}"
@@ -244,12 +288,12 @@
                 <template v-if="action.action_type === 'DO_NOTHING'">
                   <div class="idle-info">
                     <svg class="icon-small" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
-                    <span class="idle-label">Action Skipped</span>
+                    <span class="idle-label">跳过操作</span>
                   </div>
                 </template>
 
                 <!-- 通用回退：未知类型或有 content 但未被上述处理 -->
-                <div v-if="!['CREATE_POST', 'QUOTE_POST', 'REPOST', 'LIKE_POST', 'CREATE_COMMENT', 'SEARCH_POSTS', 'FOLLOW', 'UPVOTE_POST', 'DOWNVOTE_POST', 'DO_NOTHING'].includes(action.action_type) && action.action_args?.content" class="content-text">
+                <div v-if="!['CREATE_POST', 'QUOTE_POST', 'REPOST', 'LIKE_POST', 'DISLIKE_POST', 'CREATE_COMMENT', 'LIKE_COMMENT', 'DISLIKE_COMMENT', 'SEARCH_POSTS', 'SEARCH_USER', 'FOLLOW', 'MUTE', 'TREND', 'REFRESH', 'UPVOTE_POST', 'DOWNVOTE_POST', 'DO_NOTHING'].includes(action.action_type) && action.action_args?.content" class="content-text">
                   {{ action.action_args.content }}
                 </div>
               </div>
@@ -263,17 +307,17 @@
         </TransitionGroup>
 
         <div v-if="allActions.length === 0" class="waiting-state">
-          <div class="pulse-ring"></div>
-          <span>Waiting for agent actions...</span>
+          <div v-if="isStarting || runStatus.runner_status === 'running'" class="pulse-ring"></div>
+          <span>{{ emptyStateText }}</span>
         </div>
       </div>
     </div>
 
     <!-- Bottom Info / Logs -->
-    <div class="system-logs">
+    <div v-if="false" class="system-logs">
       <div class="log-header">
-        <span class="log-title">SIMULATION MONITOR</span>
-        <span class="log-id">{{ simulationId || 'NO_SIMULATION' }}</span>
+        <span class="log-title">模拟监控</span>
+        <span class="log-id">{{ simulationId || '无模拟实例' }}</span>
       </div>
       <div class="log-content" ref="logContent">
         <div class="log-line" v-for="(log, idx) in systemLogs" :key="idx">
@@ -286,13 +330,14 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick, h } from 'vue'
 import { useRouter } from 'vue-router'
 import { 
   startSimulation, 
   stopSimulation,
   getRunStatus, 
-  getRunStatusDetail
+  getRunStatusDetail,
+  getSimulationActions
 } from '../api/simulation'
 import { generateReport } from '../api/report'
 
@@ -312,6 +357,226 @@ const emit = defineEmits(['go-back', 'next-step', 'add-log', 'update-status'])
 
 const router = useRouter()
 
+const twitterAvailableActions = ['CREATE_POST', 'LIKE_POST', 'REPOST', 'QUOTE_POST', 'FOLLOW', 'DO_NOTHING']
+const redditAvailableActions = [
+  'CREATE_POST',
+  'CREATE_COMMENT',
+  'LIKE_POST',
+  'DISLIKE_POST',
+  'LIKE_COMMENT',
+  'DISLIKE_COMMENT',
+  'SEARCH_POSTS',
+  'SEARCH_USER',
+  'TREND',
+  'FOLLOW',
+  'MUTE',
+  'REFRESH',
+  'DO_NOTHING'
+]
+
+const ACTION_META = {
+  CREATE_POST: {
+    label: '发帖',
+    description: '发布新的平台内容',
+    className: 'badge-post',
+    icon: 'post'
+  },
+  REPOST: {
+    label: '转发',
+    description: '转发已有帖子',
+    className: 'badge-amplify',
+    icon: 'repost'
+  },
+  QUOTE_POST: {
+    label: '引用',
+    description: '引用原帖并补充评论',
+    className: 'badge-amplify',
+    icon: 'quote'
+  },
+  LIKE_POST: {
+    label: '点赞',
+    description: '点赞一条帖子',
+    className: 'badge-react',
+    icon: 'heart'
+  },
+  DISLIKE_POST: {
+    label: '踩帖',
+    description: '对帖子表达反对',
+    className: 'badge-react-negative',
+    icon: 'thumb-down'
+  },
+  CREATE_COMMENT: {
+    label: '评论',
+    description: '在帖子下发表评论',
+    className: 'badge-comment',
+    icon: 'comment'
+  },
+  LIKE_COMMENT: {
+    label: '赞评论',
+    description: '点赞一条评论',
+    className: 'badge-react',
+    icon: 'thumb-up'
+  },
+  DISLIKE_COMMENT: {
+    label: '踩评论',
+    description: '对评论表达反对',
+    className: 'badge-react-negative',
+    icon: 'thumb-down'
+  },
+  SEARCH_POSTS: {
+    label: '搜帖',
+    description: '搜索帖子或话题内容',
+    className: 'badge-meta',
+    icon: 'search'
+  },
+  SEARCH_USER: {
+    label: '搜用户',
+    description: '搜索平台用户',
+    className: 'badge-meta',
+    icon: 'user-search'
+  },
+  TREND: {
+    label: '趋势',
+    description: '查看趋势话题',
+    className: 'badge-meta',
+    icon: 'trend'
+  },
+  FOLLOW: {
+    label: '关注',
+    description: '关注其他用户',
+    className: 'badge-social',
+    icon: 'follow'
+  },
+  MUTE: {
+    label: '静音',
+    description: '屏蔽或静音用户',
+    className: 'badge-moderation',
+    icon: 'mute'
+  },
+  REFRESH: {
+    label: '刷新',
+    description: '刷新信息流',
+    className: 'badge-meta',
+    icon: 'refresh'
+  },
+  DO_NOTHING: {
+    label: '空闲',
+    description: '本轮未执行社交动作',
+    className: 'badge-idle',
+    icon: 'idle'
+  },
+  UPVOTE_POST: {
+    label: '顶帖',
+    description: '顶一条帖子',
+    className: 'badge-react',
+    icon: 'chevron-up'
+  },
+  DOWNVOTE_POST: {
+    label: '踩帖',
+    description: '踩一条帖子',
+    className: 'badge-react-negative',
+    icon: 'chevron-down'
+  }
+}
+
+const iconPaths = {
+  post: [
+    { type: 'path', attrs: { d: 'M4 4h16v12H7l-3 3V4z' } },
+    { type: 'path', attrs: { d: 'M8 8h8' } },
+    { type: 'path', attrs: { d: 'M8 12h6' } }
+  ],
+  repost: [
+    { type: 'polyline', attrs: { points: '17 1 21 5 17 9' } },
+    { type: 'path', attrs: { d: 'M3 11V9a4 4 0 0 1 4-4h14' } },
+    { type: 'polyline', attrs: { points: '7 23 3 19 7 15' } },
+    { type: 'path', attrs: { d: 'M21 13v2a4 4 0 0 1-4 4H3' } }
+  ],
+  quote: [
+    { type: 'path', attrs: { d: 'M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.8 1.7' } },
+    { type: 'path', attrs: { d: 'M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.8-1.7' } }
+  ],
+  heart: [
+    { type: 'path', attrs: { d: 'M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 0 0-7.8 7.8l1 1L12 21.2l7.8-7.8 1-1a5.5 5.5 0 0 0 0-7.8z' } }
+  ],
+  comment: [
+    { type: 'path', attrs: { d: 'M21 11.5a8.5 8.5 0 0 1-12.3 7.6L3 21l1.9-5.7A8.5 8.5 0 1 1 21 11.5z' } }
+  ],
+  'thumb-up': [
+    { type: 'path', attrs: { d: 'M7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3' } },
+    { type: 'path', attrs: { d: 'M7 11l4-8a3 3 0 0 1 3 3v4h5a2 2 0 0 1 2 2l-1 7a3 3 0 0 1-3 3H7V11z' } }
+  ],
+  'thumb-down': [
+    { type: 'path', attrs: { d: 'M17 2h3a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-3' } },
+    { type: 'path', attrs: { d: 'M17 13l-4 8a3 3 0 0 1-3-3v-4H5a2 2 0 0 1-2-2l1-7a3 3 0 0 1 3-3h10v11z' } }
+  ],
+  search: [
+    { type: 'circle', attrs: { cx: '11', cy: '11', r: '8' } },
+    { type: 'line', attrs: { x1: '21', y1: '21', x2: '16.65', y2: '16.65' } }
+  ],
+  'user-search': [
+    { type: 'circle', attrs: { cx: '9', cy: '7', r: '4' } },
+    { type: 'path', attrs: { d: 'M2 21v-2a4 4 0 0 1 4-4h4' } },
+    { type: 'circle', attrs: { cx: '17', cy: '17', r: '3' } },
+    { type: 'line', attrs: { x1: '19.5', y1: '19.5', x2: '22', y2: '22' } }
+  ],
+  trend: [
+    { type: 'polyline', attrs: { points: '3 17 9 11 13 15 21 7' } },
+    { type: 'polyline', attrs: { points: '15 7 21 7 21 13' } }
+  ],
+  follow: [
+    { type: 'path', attrs: { d: 'M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2' } },
+    { type: 'circle', attrs: { cx: '8.5', cy: '7', r: '4' } },
+    { type: 'line', attrs: { x1: '20', y1: '8', x2: '20', y2: '14' } },
+    { type: 'line', attrs: { x1: '23', y1: '11', x2: '17', y2: '11' } }
+  ],
+  mute: [
+    { type: 'path', attrs: { d: 'M9 9v6h4l5 4V5l-5 4H9z' } },
+    { type: 'line', attrs: { x1: '3', y1: '3', x2: '21', y2: '21' } }
+  ],
+  refresh: [
+    { type: 'polyline', attrs: { points: '23 4 23 10 17 10' } },
+    { type: 'path', attrs: { d: 'M20.5 15a9 9 0 1 1-2.1-9.4L23 10' } }
+  ],
+  idle: [
+    { type: 'circle', attrs: { cx: '12', cy: '12', r: '10' } },
+    { type: 'line', attrs: { x1: '12', y1: '8', x2: '12', y2: '12' } },
+    { type: 'line', attrs: { x1: '12', y1: '16', x2: '12.01', y2: '16' } }
+  ],
+  'chevron-up': [
+    { type: 'polyline', attrs: { points: '18 15 12 9 6 15' } }
+  ],
+  'chevron-down': [
+    { type: 'polyline', attrs: { points: '6 9 12 15 18 9' } }
+  ],
+  default: [
+    { type: 'circle', attrs: { cx: '12', cy: '12', r: '10' } },
+    { type: 'path', attrs: { d: 'M12 8v4l3 3' } }
+  ]
+}
+
+const ActionIcon = ({ type, size = 13 }) => {
+  const meta = ACTION_META[type] || {}
+  const paths = iconPaths[meta.icon] || iconPaths.default
+  const fill = meta.icon === 'heart' ? 'currentColor' : 'none'
+
+  return h(
+    'svg',
+    {
+      class: 'action-icon',
+      viewBox: '0 0 24 24',
+      width: size,
+      height: size,
+      fill,
+      stroke: 'currentColor',
+      'stroke-width': 2,
+      'stroke-linecap': 'round',
+      'stroke-linejoin': 'round',
+      'aria-hidden': 'true'
+    },
+    paths.map((item, index) => h(item.type, { key: `${type || 'unknown'}-${index}`, ...item.attrs }))
+  )
+}
+
 // State
 const isGeneratingReport = ref(false)
 const phase = ref(0) // 0: 未开始, 1: 运行中, 2: 已完成
@@ -322,6 +587,7 @@ const runStatus = ref({})
 const allActions = ref([]) // 所有动作（增量累积）
 const actionIds = ref(new Set()) // 用于去重的动作ID集合
 const scrollContainer = ref(null)
+const hasLoadedHistory = ref(false)
 
 // Computed
 // 按时间顺序显示动作（最新的在最后面，即底部）
@@ -357,6 +623,13 @@ const redditElapsedTime = computed(() => {
   return formatElapsedTime(runStatus.value.reddit_current_round || 0)
 })
 
+const emptyStateText = computed(() => {
+  if (isStarting.value) return '正在启动推演...'
+  if (runStatus.value.runner_status === 'running' || runStatus.value.runner_status === 'starting') return '等待智能体动作...'
+  if (hasLoadedHistory.value) return '当前推演暂无动作记录'
+  return '正在加载推演记录...'
+})
+
 // Methods
 const addLog = (msg) => {
   emit('add-log', msg)
@@ -371,13 +644,93 @@ const resetAllState = () => {
   prevTwitterRound.value = 0
   prevRedditRound.value = 0
   startError.value = null
+  hasLoadedHistory.value = false
   isStarting.value = false
   isStopping.value = false
   stopPolling()  // 停止之前可能存在的轮询
 }
 
+const ingestActions = (actions = []) => {
+  let newActionsAdded = 0
+  actions
+    .slice()
+    .reverse()
+    .forEach(action => {
+      const actionId = action.id || `${action.timestamp}-${action.platform}-${action.agent_id}-${action.action_type}-${action.round_num}`
+      if (!actionIds.value.has(actionId)) {
+        actionIds.value.add(actionId)
+        allActions.value.push({
+          ...action,
+          _uniqueId: actionId
+        })
+        newActionsAdded++
+      }
+    })
+  return newActionsAdded
+}
+
+const loadExistingSimulation = async () => {
+  if (!props.simulationId) {
+    addLog('错误：缺少 simulationId')
+    return
+  }
+
+  resetAllState()
+  addLog('正在加载推演历史...')
+
+  try {
+    const [statusRes, actionsRes] = await Promise.all([
+      getRunStatus(props.simulationId),
+      getSimulationActions(props.simulationId, { limit: 10000 })
+    ])
+
+    if (statusRes.success && statusRes.data) {
+      runStatus.value = statusRes.data
+      const status = statusRes.data.runner_status
+      if (status === 'running' || status === 'starting') {
+        phase.value = 1
+        emit('update-status', 'processing')
+        startStatusPolling()
+        startDetailPolling()
+      } else if (status && status !== 'idle') {
+        phase.value = 2
+        emit('update-status', status === 'failed' ? 'error' : 'completed')
+      }
+    }
+
+    const actions = actionsRes.success ? (actionsRes.data?.actions || []) : []
+    ingestActions(actions)
+    hasLoadedHistory.value = true
+
+    const runnerStatus = runStatus.value.runner_status
+    if (actions.length > 0 && runnerStatus !== 'running' && runnerStatus !== 'starting') {
+      phase.value = 2
+      emit('update-status', 'completed')
+      addLog(`已恢复 ${actions.length} 条历史动作`)
+      return
+    }
+
+    if (actions.length > 0) {
+      addLog(`已恢复 ${actions.length} 条历史动作，继续监听运行状态`)
+      return
+    }
+
+    if (!runnerStatus || runnerStatus === 'idle') {
+      addLog('未发现历史动作，自动启动新推演')
+      await doStartSimulation({ force: false })
+    } else {
+      addLog('推演暂无动作记录')
+    }
+  } catch (err) {
+    hasLoadedHistory.value = true
+    startError.value = err.message
+    addLog(`加载推演历史失败: ${err.message}`)
+    emit('update-status', 'error')
+  }
+}
+
 // 启动模拟
-const doStartSimulation = async () => {
+const doStartSimulation = async ({ force = false } = {}) => {
   if (!props.simulationId) {
     addLog('错误：缺少 simulationId')
     return
@@ -395,7 +748,7 @@ const doStartSimulation = async () => {
     const params = {
       simulation_id: props.simulationId,
       platform: 'parallel',
-      force: true,  // 强制重新开始
+      force,
       enable_graph_memory_update: true  // 开启动态图谱更新
     }
     
@@ -417,6 +770,7 @@ const doStartSimulation = async () => {
       
       phase.value = 1
       runStatus.value = res.data
+      hasLoadedHistory.value = true
       
       startStatusPolling()
       startDetailPolling()
@@ -432,6 +786,11 @@ const doStartSimulation = async () => {
   } finally {
     isStarting.value = false
   }
+}
+
+const restartSimulation = async () => {
+  addLog('准备重新推演，将清理旧运行日志...')
+  await doStartSimulation({ force: true })
 }
 
 // 停止模拟
@@ -464,10 +823,12 @@ let statusTimer = null
 let detailTimer = null
 
 const startStatusPolling = () => {
+  if (statusTimer) clearInterval(statusTimer)
   statusTimer = setInterval(fetchRunStatus, 2000)
 }
 
 const startDetailPolling = () => {
+  if (detailTimer) clearInterval(detailTimer)
   detailTimer = setInterval(fetchRunStatusDetail, 3000)
 }
 
@@ -571,24 +932,7 @@ const fetchRunStatusDetail = async () => {
     const res = await getRunStatusDetail(props.simulationId)
     
     if (res.success && res.data) {
-      // 使用 all_actions 获取完整的动作列表
-      const serverActions = res.data.all_actions || []
-      
-      // 增量添加新动作（去重）
-      let newActionsAdded = 0
-      serverActions.forEach(action => {
-        // 生成唯一ID
-        const actionId = action.id || `${action.timestamp}-${action.platform}-${action.agent_id}-${action.action_type}`
-        
-        if (!actionIds.value.has(actionId)) {
-          actionIds.value.add(actionId)
-          allActions.value.push({
-            ...action,
-            _uniqueId: actionId
-          })
-          newActionsAdded++
-        }
-      })
+      ingestActions(res.data.all_actions || [])
       
       // 不自动滚动，让用户自由查看时间轴
       // 新动作会在底部追加
@@ -600,37 +944,28 @@ const fetchRunStatusDetail = async () => {
 
 // Helpers
 const getActionTypeLabel = (type) => {
-  const labels = {
-    'CREATE_POST': 'POST',
-    'REPOST': 'REPOST',
-    'LIKE_POST': 'LIKE',
-    'CREATE_COMMENT': 'COMMENT',
-    'LIKE_COMMENT': 'LIKE',
-    'DO_NOTHING': 'IDLE',
-    'FOLLOW': 'FOLLOW',
-    'SEARCH_POSTS': 'SEARCH',
-    'QUOTE_POST': 'QUOTE',
-    'UPVOTE_POST': 'UPVOTE',
-    'DOWNVOTE_POST': 'DOWNVOTE'
-  }
-  return labels[type] || type || 'UNKNOWN'
+  return ACTION_META[type]?.label || type || '未知'
 }
 
 const getActionTypeClass = (type) => {
-  const classes = {
-    'CREATE_POST': 'badge-post',
-    'REPOST': 'badge-action',
-    'LIKE_POST': 'badge-action',
-    'CREATE_COMMENT': 'badge-comment',
-    'LIKE_COMMENT': 'badge-action',
-    'QUOTE_POST': 'badge-post',
-    'FOLLOW': 'badge-meta',
-    'SEARCH_POSTS': 'badge-meta',
-    'UPVOTE_POST': 'badge-action',
-    'DOWNVOTE_POST': 'badge-action',
-    'DO_NOTHING': 'badge-idle'
-  }
-  return classes[type] || 'badge-default'
+  return ACTION_META[type]?.className || 'badge-default'
+}
+
+const getActionTypeDescription = (type) => {
+  return ACTION_META[type]?.description || `执行 ${type || '未知'} 操作`
+}
+
+const getActionQuery = (action) => {
+  return action.action_args?.query || action.action_args?.keyword || action.action_args?.username || ''
+}
+
+const getTargetUserName = (action) => {
+  return action.action_args?.target_user_name
+    || action.action_args?.target_user
+    || action.action_args?.user_name
+    || action.action_args?.user_id
+    || action.action_args?.target_id
+    || '用户'
 }
 
 const truncateContent = (content, maxLength = 100) => {
@@ -697,7 +1032,7 @@ watch(() => props.systemLogs?.length, () => {
 onMounted(() => {
   addLog('Step3 模拟运行初始化')
   if (props.simulationId) {
-    doStartSimulation()
+    loadExistingSimulation()
   }
 })
 
@@ -813,13 +1148,23 @@ onUnmounted(() => {
 }
 
 .tooltip-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-size: 10px;
   font-weight: 600;
-  padding: 3px 8px;
+  padding: 4px 7px;
   background: rgba(255, 255, 255, 0.15);
   border-radius: 2px;
   color: #FFF;
-  letter-spacing: 0.03em;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  letter-spacing: 0;
+  line-height: 1;
+}
+
+.tooltip-action .action-icon {
+  flex: 0 0 auto;
+  opacity: 0.92;
 }
 
 .platform-header {
@@ -901,6 +1246,17 @@ onUnmounted(() => {
 
 .action-btn.primary:hover:not(:disabled) {
   background: #333;
+}
+
+.action-btn.secondary {
+  background: #FFF;
+  color: #111827;
+  border: 1px solid #D1D5DB;
+}
+
+.action-btn.secondary:hover:not(:disabled) {
+  background: #F3F4F6;
+  border-color: #9CA3AF;
 }
 
 .action-btn:disabled {
@@ -1067,6 +1423,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
 }
 
 .avatar-placeholder {
@@ -1087,12 +1444,17 @@ onUnmounted(() => {
   font-size: 13px;
   font-weight: 600;
   color: #000;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .header-meta {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex: 0 0 auto;
+  margin-left: 12px;
 }
 
 .platform-indicator {
@@ -1101,22 +1463,37 @@ onUnmounted(() => {
   align-items: center;
 }
 
-.action-badge {
-  font-size: 9px;
-  padding: 2px 6px;
-  border-radius: 2px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+.action-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 24px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
+  line-height: 1;
+  white-space: nowrap;
   border: 1px solid transparent;
 }
 
-/* Monochromatic Badges */
-.badge-post { background: #F0F0F0; color: #333; border-color: #E0E0E0; }
-.badge-comment { background: #F0F0F0; color: #666; border-color: #E0E0E0; }
-.badge-action { background: #FFF; color: #666; border: 1px solid #E0E0E0; }
-.badge-meta { background: #FAFAFA; color: #999; border: 1px dashed #DDD; }
-.badge-idle { opacity: 0.5; }
+.action-icon {
+  flex: 0 0 auto;
+}
+
+/* Action Badges */
+.badge-post { background: #EEF2FF; color: #3730A3; border-color: #C7D2FE; }
+.badge-comment { background: #ECFDF5; color: #047857; border-color: #A7F3D0; }
+.badge-amplify { background: #FFF7ED; color: #C2410C; border-color: #FED7AA; }
+.badge-react { background: #FFF1F2; color: #BE123C; border-color: #FECDD3; }
+.badge-react-negative { background: #F8FAFC; color: #475569; border-color: #CBD5E1; }
+.badge-social { background: #EFF6FF; color: #1D4ED8; border-color: #BFDBFE; }
+.badge-meta { background: #F5F3FF; color: #6D28D9; border-color: #DDD6FE; }
+.badge-moderation { background: #F4F4F5; color: #3F3F46; border-color: #D4D4D8; }
+.badge-idle { background: #F8FAFC; color: #94A3B8; border-color: #E2E8F0; }
+.badge-default { background: #FAFAFA; color: #525252; border-color: #E5E5E5; }
 
 .content-text {
   font-size: 13px;

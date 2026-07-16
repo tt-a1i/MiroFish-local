@@ -12,6 +12,7 @@
 
 import json
 import math
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Any, List, Optional, Callable
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
@@ -19,6 +20,7 @@ from datetime import datetime
 from openai import OpenAI
 
 from ..config import Config
+from ..utils.llm_routing import clamp_concurrency, get_preferred_llm_endpoint
 from ..utils.logger import get_logger
 from .zep_entity_reader import EntityNode, ZepEntityReader
 
@@ -83,7 +85,7 @@ class AgentActivityConfig:
 class TimeSimulationConfig:
     """时间模拟配置（基于中国人作息习惯）"""
     # 模拟总时长（模拟小时数）
-    total_simulation_hours: int = 72  # 默认模拟72小时（3天）
+    total_simulation_hours: int = 72  # 默认模拟72小时（3天，上限72轮）
     
     # 每轮代表的时间（模拟分钟）- 默认60分钟（1小时），加快时间流速
     minutes_per_round: int = 60
@@ -227,9 +229,15 @@ class SimulationConfigGenerator:
         base_url: Optional[str] = None,
         model_name: Optional[str] = None
     ):
-        self.api_key = api_key or Config.LLM_API_KEY
-        self.base_url = base_url or Config.LLM_BASE_URL
-        self.model_name = model_name or Config.LLM_MODEL_NAME
+        if api_key or base_url or model_name:
+            self.api_key = api_key or Config.LLM_API_KEY
+            self.base_url = base_url or Config.LLM_BASE_URL
+            self.model_name = model_name or Config.LLM_MODEL_NAME
+        else:
+            endpoint = get_preferred_llm_endpoint(prefer_boost=True)
+            self.api_key = endpoint.api_key
+            self.base_url = endpoint.base_url
+            self.model_name = endpoint.model
         
         if not self.api_key:
             raise ValueError("LLM_API_KEY 未配置")
@@ -305,24 +313,49 @@ class SimulationConfigGenerator:
         reasoning_parts.append(f"事件配置: {event_config_result.get('reasoning', '成功')}")
         
         # ========== 步骤3-N: 分批生成Agent配置 ==========
-        all_agent_configs = []
-        for batch_idx in range(num_batches):
+        agent_config_batches: Dict[int, List[AgentActivityConfig]] = {}
+
+        def generate_agent_batch(batch_idx: int) -> List[AgentActivityConfig]:
             start_idx = batch_idx * self.AGENTS_PER_BATCH
             end_idx = min(start_idx + self.AGENTS_PER_BATCH, len(entities))
             batch_entities = entities[start_idx:end_idx]
-            
-            report_progress(
-                3 + batch_idx,
-                f"生成Agent配置 ({start_idx + 1}-{end_idx}/{len(entities)})..."
-            )
-            
-            batch_configs = self._generate_agent_configs_batch(
+            return self._generate_agent_configs_batch(
                 context=context,
                 entities=batch_entities,
                 start_idx=start_idx,
                 simulation_requirement=simulation_requirement
             )
-            all_agent_configs.extend(batch_configs)
+
+        config_concurrency = clamp_concurrency(Config.SIMULATION_CONFIG_CONCURRENCY, 3, maximum=8)
+        if progress_callback or config_concurrency <= 1 or num_batches <= 1:
+            for batch_idx in range(num_batches):
+                start_idx = batch_idx * self.AGENTS_PER_BATCH
+                end_idx = min(start_idx + self.AGENTS_PER_BATCH, len(entities))
+                report_progress(
+                    3 + batch_idx,
+                    f"生成Agent配置 ({start_idx + 1}-{end_idx}/{len(entities)})..."
+                )
+                agent_config_batches[batch_idx] = generate_agent_batch(batch_idx)
+        else:
+            completed_batches = 0
+            logger.info("并发生成Agent活动配置: batches=%s, concurrency=%s", num_batches, config_concurrency)
+            with ThreadPoolExecutor(max_workers=min(config_concurrency, num_batches)) as executor:
+                future_to_batch = {
+                    executor.submit(generate_agent_batch, batch_idx): batch_idx
+                    for batch_idx in range(num_batches)
+                }
+                for future in as_completed(future_to_batch):
+                    batch_idx = future_to_batch[future]
+                    agent_config_batches[batch_idx] = future.result()
+                    completed_batches += 1
+                    report_progress(
+                        2 + completed_batches,
+                        f"Agent配置批次完成 ({completed_batches}/{num_batches})..."
+                    )
+
+        all_agent_configs = []
+        for batch_idx in range(num_batches):
+            all_agent_configs.extend(agent_config_batches.get(batch_idx, []))
         
         reasoning_parts.append(f"Agent配置: 成功生成 {len(all_agent_configs)} 个")
         
@@ -574,8 +607,8 @@ class SimulationConfigGenerator:
 }}
 
 字段说明：
-- total_simulation_hours (int): 模拟总时长，24-168小时，突发事件短、持续话题长
-- minutes_per_round (int): 每轮时长，30-120分钟，建议60分钟
+- total_simulation_hours (int): 模拟总时长，固定72小时，对应最多72轮
+- minutes_per_round (int): 每轮时长，固定60分钟（1小时）
 - agents_per_hour_min (int): 每小时最少激活Agent数（取值范围: 1-{max_agents_allowed}）
 - agents_per_hour_max (int): 每小时最多激活Agent数（取值范围: 1-{max_agents_allowed}）
 - peak_hours (int数组): 高峰时段，根据事件参与群体调整
@@ -627,8 +660,8 @@ class SimulationConfigGenerator:
             logger.warning(f"agents_per_hour_min >= max，已修正为 {agents_per_hour_min}")
         
         return TimeSimulationConfig(
-            total_simulation_hours=result.get("total_simulation_hours", 72),
-            minutes_per_round=result.get("minutes_per_round", 60),  # 默认每轮1小时
+            total_simulation_hours=72,
+            minutes_per_round=60,  # 固定每轮1小时，确保72小时对应72轮
             agents_per_hour_min=agents_per_hour_min,
             agents_per_hour_max=agents_per_hour_max,
             peak_hours=result.get("peak_hours", [19, 20, 21, 22]),
@@ -984,4 +1017,3 @@ class SimulationConfigGenerator:
                 "influence_weight": 1.0
             }
     
-

@@ -15,6 +15,12 @@ from ..config import Config
 from ..utils.logger import get_logger
 from .zep_factory import get_zep_client
 from .zep_adapter import ZepClientAdapter
+from .graph_builder import GraphBuilderService
+from .location_entity_filter import (
+    filter_location_entities,
+    is_known_media_platform_name,
+    is_location_entity_node,
+)
 
 logger = get_logger('mirofish.zep_entity_reader')
 
@@ -48,6 +54,8 @@ class EntityNode:
     
     def get_entity_type(self) -> Optional[str]:
         """获取实体类型（排除默认的Entity标签）"""
+        if is_known_media_platform_name(self.name):
+            return "SocialMediaPlatform"
         for label in self.labels:
             if label not in ["Entity", "Node"]:
                 return label
@@ -81,10 +89,10 @@ class ZepEntityReader:
     3. 获取每个实体的相关边和关联节点信息
     """
     
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, backend: Optional[str] = None):
         """初始化实体读取服务（使用适配器工厂）"""
         # 使用单例获取适配器（避免重复初始化）
-        self.client: ZepClientAdapter = get_zep_client()
+        self.client: ZepClientAdapter = get_zep_client(backend=backend)
     
     def _call_with_retry(
         self, 
@@ -142,6 +150,8 @@ class ZepEntityReader:
             func=lambda: self.client.get_all_nodes(graph_id),
             operation_name=f"获取节点(graph={graph_id})"
         )
+        nodes, _ = GraphBuilderService._coalesce_duplicate_entities(nodes, [])
+        nodes, _ = filter_location_entities(nodes, [])
 
         nodes_data = []
         for node in nodes:
@@ -173,6 +183,12 @@ class ZepEntityReader:
             func=lambda: self.client.get_all_edges(graph_id),
             operation_name=f"获取边(graph={graph_id})"
         )
+        nodes = self._call_with_retry(
+            func=lambda: self.client.get_all_nodes(graph_id),
+            operation_name=f"获取节点(graph={graph_id})"
+        )
+        nodes, edges = GraphBuilderService._coalesce_duplicate_entities(nodes, edges)
+        nodes, edges = filter_location_entities(nodes, edges)
 
         edges_data = []
         for edge in edges:
@@ -188,7 +204,7 @@ class ZepEntityReader:
         logger.info(f"共获取 {len(edges_data)} 条边")
         return edges_data
     
-    def get_node_edges(self, node_uuid: str) -> List[Dict[str, Any]]:
+    def get_node_edges(self, graph_id: str, node_uuid: str) -> List[Dict[str, Any]]:
         """
         获取指定节点的所有相关边（带重试机制）
 
@@ -201,7 +217,7 @@ class ZepEntityReader:
         try:
             # 使用重试机制调用适配器 API
             edges = self._call_with_retry(
-                func=lambda: self.client.get_node_edges(node_uuid),
+                func=lambda: self.client.get_node_edges(graph_id, node_uuid),
                 operation_name=f"获取节点边(node={node_uuid[:8]}...)"
             )
 
@@ -260,30 +276,47 @@ class ZepEntityReader:
         
         for node in all_nodes:
             labels = node.get("labels", [])
+            if is_location_entity_node(node):
+                continue
+            is_media_platform = is_known_media_platform_name(node.get("name"))
             
             # 筛选逻辑：Labels必须包含除"Entity"和"Node"之外的标签
             custom_labels = [l for l in labels if l not in ["Entity", "Node"]]
+            if is_media_platform:
+                custom_labels = ["SocialMediaPlatform"]
             
             if not custom_labels:
                 # 只有默认标签，跳过
-                continue
+                if is_media_platform:
+                    custom_labels = ["SocialMediaPlatform"]
+                else:
+                    continue
             
             # 如果指定了预定义类型，检查是否匹配
             if defined_entity_types:
                 matching_labels = [l for l in custom_labels if l in defined_entity_types]
+                if is_media_platform and "SocialMediaPlatform" in defined_entity_types:
+                    matching_labels = ["SocialMediaPlatform"]
                 if not matching_labels:
                     continue
                 entity_type = matching_labels[0]
             else:
-                entity_type = custom_labels[0]
+                entity_type = "SocialMediaPlatform" if is_media_platform else custom_labels[0]
             
             entity_types_found.add(entity_type)
             
             # 创建实体节点对象
+            normalized_labels = list(labels or [])
+            if is_media_platform and "SocialMediaPlatform" not in normalized_labels:
+                normalized_labels = [
+                    label for label in normalized_labels
+                    if label not in {"Person", "个人", "个人实体"}
+                ]
+                normalized_labels.append("SocialMediaPlatform")
             entity = EntityNode(
                 uuid=node["uuid"],
                 name=node["name"],
-                labels=labels,
+                labels=normalized_labels,
                 summary=node["summary"],
                 attributes=node["attributes"],
             )
@@ -337,10 +370,16 @@ class ZepEntityReader:
                 "这可能是因为使用 Graphiti 后端且未配置 ontology。"
             )
             for node in all_nodes:
+                if is_location_entity_node(node):
+                    continue
+                fallback_labels = node.get("labels", ["Entity"])
+                if is_known_media_platform_name(node.get("name")) and "SocialMediaPlatform" not in fallback_labels:
+                    fallback_labels = list(fallback_labels or ["Entity"])
+                    fallback_labels.append("SocialMediaPlatform")
                 entity = EntityNode(
                     uuid=node["uuid"],
                     name=node["name"],
-                    labels=node.get("labels", ["Entity"]),
+                    labels=fallback_labels,
                     summary=node["summary"],
                     attributes=node["attributes"],
                 )
@@ -408,7 +447,7 @@ class ZepEntityReader:
         try:
             # 使用重试机制获取节点
             node = self._call_with_retry(
-                func=lambda: self.client.get_node(entity_uuid),
+                func=lambda: self.client.get_node(graph_id, entity_uuid),
                 operation_name=f"获取节点详情(uuid={entity_uuid[:8]}...)"
             )
 
@@ -416,7 +455,7 @@ class ZepEntityReader:
                 return None
 
             # 获取节点的边
-            edges = self.get_node_edges(entity_uuid)
+            edges = self.get_node_edges(graph_id, entity_uuid)
 
             # 获取所有节点用于关联查找
             all_nodes = self.get_all_nodes(graph_id)
@@ -493,5 +532,3 @@ class ZepEntityReader:
             enrich_with_edges=enrich_with_edges
         )
         return result.entities
-
-

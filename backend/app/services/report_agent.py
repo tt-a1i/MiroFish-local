@@ -13,6 +13,8 @@ import os
 import json
 import time
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Any, List, Optional, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -20,6 +22,7 @@ from enum import Enum
 
 from ..config import Config
 from ..utils.llm_client import LLMClient
+from ..utils.llm_routing import clamp_concurrency
 from ..utils.logger import get_logger
 from .zep_tools import (
     ZepToolsService, 
@@ -52,6 +55,7 @@ class ReportLogger:
             Config.UPLOAD_FOLDER, 'reports', report_id, 'agent_log.jsonl'
         )
         self.start_time = datetime.now()
+        self._write_lock = threading.Lock()
         self._ensure_log_file()
     
     def _ensure_log_file(self):
@@ -93,8 +97,9 @@ class ReportLogger:
         }
         
         # 追加写入 JSONL 文件
-        with open(self.log_file_path, 'a', encoding='utf-8') as f:
-            f.write(json.dumps(log_entry, ensure_ascii=False) + '\n')
+        with self._write_lock:
+            with open(self.log_file_path, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(log_entry, ensure_ascii=False) + '\n')
     
     def log_start(self, simulation_id: str, graph_id: str, simulation_requirement: str):
         """记录报告生成开始"""
@@ -243,14 +248,15 @@ class ReportLogger:
     ):
         """记录章节/子章节内容生成完成（仅记录内容，不代表整个章节完成）"""
         action = "subsection_content" if is_subsection else "section_content"
+        clean_content = ReportContentSanitizer.clean_report_content(content)
         self.log(
             action=action,
             stage="generating",
             section_title=section_title,
             section_index=section_index,
             details={
-                "content": content,  # 完整内容，不截断
-                "content_length": len(content),
+                "content": clean_content,  # 完整内容，不截断
+                "content_length": len(clean_content),
                 "tool_calls_count": tool_calls_count,
                 "is_subsection": is_subsection,
                 "message": f"{'子章节' if is_subsection else '主章节'} {section_title} 内容生成完成"
@@ -269,14 +275,15 @@ class ReportLogger:
         
         前端应监听此日志来判断一个章节是否真正完成，并获取完整内容
         """
+        clean_content = ReportContentSanitizer.clean_report_content(full_content)
         self.log(
             action="section_complete",
             stage="generating",
             section_title=section_title,
             section_index=section_index,
             details={
-                "content": full_content,  # 完整章节内容（含子章节），不截断
-                "content_length": len(full_content),
+                "content": clean_content,  # 完整章节内容（含子章节），不截断
+                "content_length": len(clean_content),
                 "subsection_count": subsection_count,
                 "message": f"章节 {section_title} 完整生成完成（含 {subsection_count} 个子章节）"
             }
@@ -417,7 +424,7 @@ class ReportSection:
         """转换为Markdown格式"""
         md = f"{'#' * level} {self.title}\n\n"
         if self.content:
-            md += f"{self.content}\n\n"
+            md += f"{ReportContentSanitizer.clean_report_content(self.content)}\n\n"
         for sub in self.subsections:
             md += sub.to_markdown(level + 1)
         return md
@@ -475,6 +482,142 @@ class Report:
         }
 
 
+class ReportContentSanitizer:
+    """报告正文清洗器，负责移除模型工具协议与非正文思考残留。"""
+
+    TOOL_NAME_ALIASES = {
+        "insightforge": "insight_forge",
+        "insight_forge": "insight_forge",
+        "panoramasearch": "panorama_search",
+        "panorama_search": "panorama_search",
+        "quicksearch": "quick_search",
+        "quick_search": "quick_search",
+        "interviewagents": "interview_agents",
+        "interview_agents": "interview_agents",
+        "searchgraph": "search_graph",
+        "search_graph": "search_graph",
+        "getgraphstatistics": "get_graph_statistics",
+        "get_graph_statistics": "get_graph_statistics",
+        "getentitysummary": "get_entity_summary",
+        "get_entity_summary": "get_entity_summary",
+        "getsimulationcontext": "get_simulation_context",
+        "get_simulation_context": "get_simulation_context",
+        "getentitiesbytype": "get_entities_by_type",
+        "get_entities_by_type": "get_entities_by_type",
+    }
+
+    @classmethod
+    def normalize_tool_name(cls, tool_name: str) -> str:
+        """将模型输出的工具名归一到项目内部工具名。"""
+        normalized = str(tool_name or "").strip()
+        if normalized.startswith("functions."):
+            normalized = normalized.split(".", 1)[1]
+        key = re.sub(r"[^a-z0-9_]", "", normalized.lower())
+        return cls.TOOL_NAME_ALIASES.get(key, normalized)
+
+    @classmethod
+    def extract_structured_tool_calls(cls, response: str) -> List[Dict[str, Any]]:
+        """解析 OpenAI 兼容模型可能直接吐出的结构化工具调用文本。"""
+        if not response or ("tool_call_begin" not in response and "toolcallbegin" not in response):
+            return []
+
+        tool_calls = []
+        patterns = [
+            re.compile(
+                r"<\|tool_call_begin\|>\s*"
+                r"(?:functions\.)?(?P<name>[A-Za-z_][\w]*)"
+                r"(?::\d+)?\s*"
+                r"<\|tool_call_argument_begin\|>"
+                r"(?P<args>[\s\S]*?)"
+                r"<\|tool_call_end\|>",
+                re.DOTALL,
+            ),
+            re.compile(
+                r"<toolcallbegin/>\s*"
+                r"(?:functions\.)?(?P<name>[A-Za-z_][\w]*)"
+                r"(?::\d+)?\s*"
+                r"<toolcallargumentbegin/>"
+                r"(?P<args>[\s\S]*?)"
+                r"<toolcallend/>",
+                re.DOTALL | re.IGNORECASE,
+            ),
+        ]
+        for pattern in patterns:
+            for match in pattern.finditer(response):
+                raw_args = match.group("args").strip()
+                try:
+                    parameters = json.loads(raw_args) if raw_args else {}
+                except json.JSONDecodeError:
+                    parameters = {}
+                if not isinstance(parameters, dict):
+                    parameters = {}
+                tool_calls.append({
+                    "name": cls.normalize_tool_name(match.group("name")),
+                    "parameters": parameters,
+                })
+        return tool_calls
+
+    @classmethod
+    def remove_tool_protocol(cls, content: str) -> str:
+        """移除报告正文中不应展示的工具协议块。"""
+        if not content:
+            return content
+
+        cleaned = str(content)
+        patterns = [
+            r"<\|tool_calls_section_begin\|>[\s\S]*?<\|tool_calls_section_end\|>",
+            r"<\|tool_call_begin\|>[\s\S]*?<\|tool_call_end\|>",
+            r"<tool_call>[\s\S]*?</tool_call>",
+            r"<toolcallsection/begin/>[\s\S]*?<toolcallsection/end/>",
+            r"<toolcallbegin/>[\s\S]*?<toolcallend/>",
+            r"\[TOOL_CALL\][^\n]*(?:\n|$)",
+        ]
+        for pattern in patterns:
+            cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE)
+
+        cleaned = re.sub(r"</?think>", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"<\|[^|>]*tool[^|>]*\|>", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"</?toolcall[^>]*>", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        return cleaned.strip()
+
+    @classmethod
+    def strip_non_content_prefix(cls, content: str) -> str:
+        """去掉工具调度语气和 Final Answer 标记，只保留报告正文。"""
+        if not content:
+            return content
+
+        cleaned = str(content).strip()
+        cleaned = re.sub(r"(?m)^\s*(?:Final Answer|最终答案|最终回答)\s*[:：]\s*", "", cleaned, flags=re.IGNORECASE)
+
+        orchestration_patterns = [
+            r"(?m)^\s*(?:我需要|让我|现在|首先|接下来|我将)[^\n。！？]*?(?:调用|使用)[^\n。！？]*?(?:工具|检索|搜索)[^\n]*$",
+            r"(?m)^\s*(?:Thought|Action|Observation)\s*[:：][^\n]*$",
+        ]
+        for pattern in orchestration_patterns:
+            cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE).strip()
+        return cleaned
+
+    @classmethod
+    def clean_report_content(cls, content: str) -> str:
+        """清洗即将保存或展示的报告正文。"""
+        cleaned = cls.remove_tool_protocol(content or "")
+        cleaned = cls.strip_non_content_prefix(cleaned)
+        cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+        return cleaned.strip()
+
+    @classmethod
+    def extract_final_answer(cls, response: str) -> str:
+        """从 LLM 原始响应中提取最终答案段落。"""
+        if not response:
+            return response
+        matches = list(re.finditer(r"(?:Final Answer|最终答案|最终回答)\s*[:：]", response, flags=re.IGNORECASE))
+        if not matches:
+            return response
+        return response[matches[-1].end():].strip()
+
+
 class ReportAgent:
     """
     Report Agent - 模拟报告生成Agent
@@ -523,7 +666,7 @@ class ReportAgent:
         self.simulation_id = simulation_id
         self.simulation_requirement = simulation_requirement
         
-        self.llm = llm_client or LLMClient()
+        self.llm = llm_client or LLMClient(prefer_boost=True)
         self.zep_tools = zep_tools or ZepToolsService()
         
         # 工具定义
@@ -767,12 +910,18 @@ class ReportAgent:
         [TOOL_CALL] tool_name(param1="value1", param2="value2")
         """
         tool_calls = []
+
+        # 格式0: OpenAI 兼容模型直接输出的结构化工具调用文本
+        # <|tool_call_begin|>functions.quicksearch:1<|tool_call_argument_begin|>{...}<|tool_call_end|>
+        tool_calls.extend(ReportContentSanitizer.extract_structured_tool_calls(response))
         
         # 格式1: XML风格
         xml_pattern = r'<tool_call>\s*(\{.*?\})\s*</tool_call>'
         for match in re.finditer(xml_pattern, response, re.DOTALL):
             try:
                 call_data = json.loads(match.group(1))
+                if isinstance(call_data, dict) and call_data.get("name"):
+                    call_data["name"] = ReportContentSanitizer.normalize_tool_name(call_data["name"])
                 tool_calls.append(call_data)
             except json.JSONDecodeError:
                 pass
@@ -789,7 +938,7 @@ class ReportAgent:
                 params[param_match.group(1)] = param_match.group(2)
             
             tool_calls.append({
-                "name": tool_name,
+                "name": ReportContentSanitizer.normalize_tool_name(tool_name),
                 "parameters": params
             })
         
@@ -1195,7 +1344,7 @@ class ReportAgent:
             
             # 检查是否有工具调用和最终答案
             has_tool_calls = bool(self._parse_tool_calls(response))
-            has_final_answer = "Final Answer:" in response
+            has_final_answer = bool(re.search(r"(?:Final Answer|最终答案|最终回答)\s*[:：]", response, flags=re.IGNORECASE))
             
             # 记录 LLM 响应日志
             if self.report_logger:
@@ -1227,7 +1376,9 @@ class ReportAgent:
                     continue
                 
                 # 提取最终答案
-                final_answer = response.split("Final Answer:")[-1].strip()
+                final_answer = ReportContentSanitizer.clean_report_content(
+                    ReportContentSanitizer.extract_final_answer(response)
+                )
                 logger.info(f"章节 {section.title} 生成完成（工具调用: {tool_calls_count}次）")
                 
                 # 记录章节内容生成完成日志（注意：这只是内容完成，不代表整个章节完成）
@@ -1339,10 +1490,9 @@ class ReportAgent:
             max_tokens=4096
         )
         
-        if "Final Answer:" in response:
-            final_answer = response.split("Final Answer:")[-1].strip()
-        else:
-            final_answer = response
+        final_answer = ReportContentSanitizer.clean_report_content(
+            ReportContentSanitizer.extract_final_answer(response)
+        )
         
         # 记录章节内容生成完成日志（注意：这只是内容完成，不代表整个章节完成）
         is_subsection = section_index >= 100
@@ -1460,107 +1610,265 @@ class ReportAgent:
             
             total_sections = len(outline.sections)
             generated_sections = []  # 保存内容用于上下文
-            
-            for i, section in enumerate(outline.sections):
-                section_num = i + 1
-                base_progress = 20 + int((i / total_sections) * 70)
-                
-                # 更新进度
-                ReportManager.update_progress(
-                    report_id, "generating", base_progress,
-                    f"正在生成章节: {section.title} ({section_num}/{total_sections})",
-                    current_section=section.title,
-                    completed_sections=completed_section_titles
-                )
-                
-                if progress_callback:
-                    progress_callback(
-                        "generating", 
-                        base_progress, 
-                        f"正在生成章节: {section.title} ({section_num}/{total_sections})"
-                    )
-                
-                # 生成主章节内容
-                section_content = self._generate_section_react(
-                    section=section,
-                    outline=outline,
-                    previous_sections=generated_sections,
-                    progress_callback=lambda stage, prog, msg:
-                        progress_callback(
-                            stage, 
-                            base_progress + int(prog * 0.7 / total_sections),
-                            msg
-                        ) if progress_callback else None,
-                    section_index=section_num
-                )
-                
-                section.content = section_content
-                generated_sections.append(f"## {section.title}\n\n{section_content}")
-                
-                # 如果有子章节，也一并生成并合并到主章节中
-                subsection_contents = []
-                for j, subsection in enumerate(section.subsections):
-                    subsection_num = j + 1
-                    
-                    if progress_callback:
-                        progress_callback(
-                            "generating",
-                            base_progress + int(((j + 1) / max(len(section.subsections), 1)) * 5),
-                            f"正在生成子章节: {subsection.title}"
-                        )
-                    
-                    ReportManager.update_progress(
-                        report_id, "generating",
-                        base_progress + int(((j + 1) / max(len(section.subsections), 1)) * 5),
-                        f"正在生成子章节: {subsection.title}",
-                        current_section=subsection.title,
-                        completed_sections=completed_section_titles
-                    )
-                    
-                    subsection_content = self._generate_section_react(
-                        section=subsection,
-                        outline=outline,
-                        previous_sections=generated_sections,
-                        progress_callback=None,
-                        section_index=section_num * 100 + subsection_num  # 子章节索引
-                    )
-                    subsection.content = subsection_content
-                    generated_sections.append(f"### {subsection.title}\n\n{subsection_content}")
-                    subsection_contents.append((subsection.title, subsection_content))
-                    completed_section_titles.append(f"  └─ {subsection.title}")
-                    
-                    logger.info(f"子章节已生成: {subsection.title}")
-                
-                # 【关键】将主章节和所有子章节合并保存到一个文件
-                ReportManager.save_section_with_subsections(
-                    report_id, section_num, section, subsection_contents
-                )
-                completed_section_titles.append(section.title)
-                
-                # 【重要】记录完整章节完成日志，包含合并后的完整内容
-                # 构建完整章节内容（主章节 + 所有子章节）
+            report_parallelism = clamp_concurrency(Config.REPORT_SECTION_CONCURRENCY, 1, maximum=4)
+
+            def build_full_section(section_num: int, section: ReportSection, section_content: str, subsection_contents):
                 full_section_content = f"## {section.title}\n\n{section_content}\n\n"
                 for sub_title, sub_content in subsection_contents:
                     full_section_content += f"### {sub_title}\n\n{sub_content}\n\n"
-                
+                return full_section_content.strip()
+
+            def publish_section_result(result: Dict[str, Any]) -> None:
+                """
+                将已生成章节按报告顺序发布到文件和日志。
+
+                并发模式下章节可能乱序完成，但前端左侧报告必须保持顺序展示：
+                第 2 章即使先生成完成，也要等第 1 章发布后才能发布。
+                """
+                section = result["section"]
+                section_num = result["section_num"]
+                subsection_contents = result["subsection_contents"]
+
+                ReportManager.save_section_with_subsections(
+                    report_id, section_num, section, subsection_contents
+                )
+                for sub_title, _ in subsection_contents:
+                    completed_section_titles.append(f"  └─ {sub_title}")
+                completed_section_titles.append(section.title)
+                generated_sections.append(result["full_section_content"])
+
                 if self.report_logger:
                     self.report_logger.log_section_full_complete(
                         section_title=section.title,
                         section_index=section_num,
-                        full_content=full_section_content.strip(),
+                        full_content=result["full_section_content"],
                         subsection_count=len(subsection_contents)
                     )
-                
-                logger.info(f"章节已保存（包含{len(subsection_contents)}个子章节）: {report_id}/section_{section_num:02d}.md")
-                
-                # 更新进度
+
+                progress_value = 20 + int((section_num / total_sections) * 70)
                 ReportManager.update_progress(
-                    report_id, "generating", 
-                    base_progress + int(70 / total_sections),
+                    report_id, "generating",
+                    progress_value,
                     f"章节 {section.title} 已完成",
                     current_section=None,
                     completed_sections=completed_section_titles
                 )
+                if progress_callback:
+                    progress_callback(
+                        "generating",
+                        progress_value,
+                        f"章节 {section.title} 已完成"
+                    )
+
+                logger.info(
+                    f"章节已按序发布（包含{len(subsection_contents)}个子章节）: "
+                    f"{report_id}/section_{section_num:02d}.md"
+                )
+
+            def generate_single_section(i: int, section: ReportSection, previous_snapshot: List[str]):
+                section_num = i + 1
+                base_progress = 20 + int((i / total_sections) * 70)
+
+                section_content = self._generate_section_react(
+                    section=section,
+                    outline=outline,
+                    previous_sections=previous_snapshot,
+                    progress_callback=None,
+                    section_index=section_num
+                )
+                section.content = section_content
+
+                subsection_contents = []
+                local_generated = previous_snapshot + [f"## {section.title}\n\n{section_content}"]
+                for j, subsection in enumerate(section.subsections):
+                    subsection_num = j + 1
+                    subsection_content = self._generate_section_react(
+                        section=subsection,
+                        outline=outline,
+                        previous_sections=local_generated,
+                        progress_callback=None,
+                        section_index=section_num * 100 + subsection_num
+                    )
+                    subsection.content = subsection_content
+                    local_generated.append(f"### {subsection.title}\n\n{subsection_content}")
+                    subsection_contents.append((subsection.title, subsection_content))
+                    logger.info(f"子章节已生成: {subsection.title}")
+
+                full_section_content = build_full_section(
+                    section_num,
+                    section,
+                    section_content,
+                    subsection_contents,
+                )
+                return {
+                    "index": i,
+                    "section_num": section_num,
+                    "base_progress": base_progress,
+                    "section": section,
+                    "section_content": section_content,
+                    "subsection_contents": subsection_contents,
+                    "full_section_content": full_section_content,
+                }
+
+            if report_parallelism <= 1 or total_sections <= 1:
+                for i, section in enumerate(outline.sections):
+                    section_num = i + 1
+                    base_progress = 20 + int((i / total_sections) * 70)
+
+                    ReportManager.update_progress(
+                        report_id, "generating", base_progress,
+                        f"正在生成章节: {section.title} ({section_num}/{total_sections})",
+                        current_section=section.title,
+                        completed_sections=completed_section_titles
+                    )
+                    if progress_callback:
+                        progress_callback(
+                            "generating",
+                            base_progress,
+                            f"正在生成章节: {section.title} ({section_num}/{total_sections})"
+                        )
+
+                    section_content = self._generate_section_react(
+                        section=section,
+                        outline=outline,
+                        previous_sections=generated_sections,
+                        progress_callback=lambda stage, prog, msg:
+                            progress_callback(
+                                stage,
+                                base_progress + int(prog * 0.7 / total_sections),
+                                msg
+                            ) if progress_callback else None,
+                        section_index=section_num
+                    )
+                    section.content = section_content
+                    generated_sections.append(f"## {section.title}\n\n{section_content}")
+
+                    subsection_contents = []
+                    for j, subsection in enumerate(section.subsections):
+                        subsection_num = j + 1
+                        if progress_callback:
+                            progress_callback(
+                                "generating",
+                                base_progress + int(((j + 1) / max(len(section.subsections), 1)) * 5),
+                                f"正在生成子章节: {subsection.title}"
+                            )
+
+                        ReportManager.update_progress(
+                            report_id, "generating",
+                            base_progress + int(((j + 1) / max(len(section.subsections), 1)) * 5),
+                            f"正在生成子章节: {subsection.title}",
+                            current_section=subsection.title,
+                            completed_sections=completed_section_titles
+                        )
+
+                        subsection_content = self._generate_section_react(
+                            section=subsection,
+                            outline=outline,
+                            previous_sections=generated_sections,
+                            progress_callback=None,
+                            section_index=section_num * 100 + subsection_num
+                        )
+                        subsection.content = subsection_content
+                        generated_sections.append(f"### {subsection.title}\n\n{subsection_content}")
+                        subsection_contents.append((subsection.title, subsection_content))
+                        completed_section_titles.append(f"  └─ {subsection.title}")
+                        logger.info(f"子章节已生成: {subsection.title}")
+
+                    ReportManager.save_section_with_subsections(
+                        report_id, section_num, section, subsection_contents
+                    )
+                    completed_section_titles.append(section.title)
+
+                    full_section_content = build_full_section(
+                        section_num,
+                        section,
+                        section_content,
+                        subsection_contents,
+                    )
+                    if self.report_logger:
+                        self.report_logger.log_section_full_complete(
+                            section_title=section.title,
+                            section_index=section_num,
+                            full_content=full_section_content,
+                            subsection_count=len(subsection_contents)
+                        )
+
+                    logger.info(f"章节已保存（包含{len(subsection_contents)}个子章节）: {report_id}/section_{section_num:02d}.md")
+                    ReportManager.update_progress(
+                        report_id, "generating",
+                        base_progress + int(70 / total_sections),
+                        f"章节 {section.title} 已完成",
+                        current_section=None,
+                        completed_sections=completed_section_titles
+                    )
+            else:
+                logger.info("启用报告章节并发生成: sections=%s, concurrency=%s", total_sections, report_parallelism)
+                section_results: Dict[int, Dict[str, Any]] = {}
+                completed_count = 0
+                next_publish_index = 0
+                first_error: Optional[Exception] = None
+
+                def publish_available_sections() -> None:
+                    nonlocal next_publish_index
+                    while next_publish_index in section_results:
+                        result_to_publish = section_results.pop(next_publish_index)
+                        publish_section_result(result_to_publish)
+                        next_publish_index += 1
+
+                with ThreadPoolExecutor(max_workers=min(report_parallelism, total_sections)) as executor:
+                    future_to_index = {
+                        executor.submit(
+                            generate_single_section,
+                            i,
+                            section,
+                            [
+                                "章节并发生成模式：请严格围绕当前章节标题撰写，避免覆盖其他章节主题。"
+                                f"完整报告章节顺序：{', '.join(sec.title for sec in outline.sections)}"
+                            ],
+                        ): i
+                        for i, section in enumerate(outline.sections)
+                    }
+                    for future in as_completed(future_to_index):
+                        future_index = future_to_index[future]
+                        try:
+                            result = future.result()
+                        except Exception as section_error:
+                            first_error = section_error
+                            failed_section = outline.sections[future_index]
+                            error_message = f"章节 {future_index + 1} 生成失败: {section_error}"
+                            logger.error(error_message)
+                            ReportManager.update_progress(
+                                report_id, "failed",
+                                -1,
+                                f"报告生成失败: {section_error}",
+                                current_section=failed_section.title,
+                                completed_sections=completed_section_titles
+                            )
+                            if progress_callback:
+                                progress_callback("failed", -1, error_message)
+                            continue
+
+                        section_results[result["index"]] = result
+                        completed_count += 1
+                        progress_value = 20 + int((completed_count / total_sections) * 70)
+                        ReportManager.update_progress(
+                            report_id, "generating",
+                            progress_value,
+                            f"已生成章节 {completed_count}/{total_sections}: {result['section'].title}",
+                            current_section=result["section"].title,
+                            completed_sections=completed_section_titles
+                        )
+                        if progress_callback:
+                            progress_callback(
+                                "generating",
+                                progress_value,
+                                f"已生成章节 {completed_count}/{total_sections}: {result['section'].title}"
+                            )
+                        publish_available_sections()
+
+                publish_available_sections()
+                if first_error:
+                    raise first_error
             
             # 阶段3: 组装完整报告
             if progress_callback:
@@ -1940,6 +2248,7 @@ class ReportManager:
                 if i >= from_line:
                     try:
                         log_entry = json.loads(line.strip())
+                        log_entry = cls._sanitize_agent_log_entry(log_entry)
                         logs.append(log_entry)
                     except json.JSONDecodeError:
                         # 跳过解析失败的行
@@ -1965,6 +2274,25 @@ class ReportManager:
         """
         result = cls.get_agent_log(report_id, from_line=0)
         return result["logs"]
+
+    @classmethod
+    def _sanitize_agent_log_entry(cls, log_entry: Dict[str, Any]) -> Dict[str, Any]:
+        """清洗日志中会直接进入前端报告正文的内容字段。"""
+        if not isinstance(log_entry, dict):
+            return log_entry
+
+        details = log_entry.get("details")
+        if not isinstance(details, dict):
+            return log_entry
+
+        if log_entry.get("action") in {"section_content", "subsection_content", "section_complete"}:
+            content = details.get("content")
+            if isinstance(content, str):
+                clean_content = ReportContentSanitizer.clean_report_content(content)
+                details["content"] = clean_content
+                details["content_length"] = len(clean_content)
+
+        return log_entry
     
     @classmethod
     def save_outline(cls, report_id: str, outline: ReportOutline) -> None:
@@ -2092,7 +2420,7 @@ class ReportManager:
         if not content:
             return content
         
-        content = content.strip()
+        content = ReportContentSanitizer.clean_report_content(content)
         lines = content.split('\n')
         cleaned_lines = []
         skip_next_empty = False
@@ -2193,16 +2521,19 @@ class ReportManager:
             return []
         
         sections = []
+        persisted_section_indexes = set()
         for filename in sorted(os.listdir(folder)):
             if filename.startswith('section_') and filename.endswith('.md'):
                 file_path = os.path.join(folder, filename)
                 with open(file_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
+                    content = cls._clean_persisted_markdown(f.read())
                 
                 # 从文件名解析章节索引
                 parts = filename.replace('.md', '').split('_')
                 section_index = int(parts[1])
                 subsection_index = int(parts[2]) if len(parts) > 2 else None
+                if subsection_index is None:
+                    persisted_section_indexes.add(section_index)
                 
                 sections.append({
                     "filename": filename,
@@ -2212,7 +2543,109 @@ class ReportManager:
                     "is_subsection": subsection_index is not None
                 })
         
+        recovered_sections = cls._recover_generated_sections_from_logs(
+            report_id,
+            persisted_section_indexes
+        )
+        if recovered_sections:
+            sections.extend(recovered_sections)
+            sections.sort(key=lambda item: (
+                item["section_index"],
+                item.get("subsection_index") or 0
+            ))
+
         return sections
+
+    @classmethod
+    def _clean_persisted_markdown(cls, content: str) -> str:
+        """清洗已落盘的章节或完整报告内容，兼容历史脏数据。"""
+        if not content:
+            return content
+        return ReportContentSanitizer.clean_report_content(content)
+
+    @classmethod
+    def _recover_generated_sections_from_logs(
+        cls,
+        report_id: str,
+        persisted_section_indexes: set
+    ) -> List[Dict[str, Any]]:
+        """
+        从历史日志恢复已完整生成但未落盘的章节。
+
+        早期并发分支会等所有章节 Future 结束后才统一保存，若后续章节失败，
+        已生成完的前序章节不会写入 section_XX.md。这里按大纲校验主章节与
+        所有子章节内容都已出现后，只读地返回可展示章节快照。
+        """
+        outline_path = cls._get_outline_path(report_id)
+        if not os.path.exists(outline_path):
+            return []
+
+        try:
+            with open(outline_path, 'r', encoding='utf-8') as f:
+                outline_data = json.load(f)
+        except Exception:
+            return []
+
+        main_contents: Dict[int, str] = {}
+        subsection_contents: Dict[int, Dict[int, str]] = {}
+        log_data = cls.get_agent_log(report_id, from_line=0)
+        for log_entry in log_data.get("logs", []):
+            details = log_entry.get("details") or {}
+            content = details.get("content")
+            section_index = log_entry.get("section_index")
+            if not isinstance(section_index, int) or not isinstance(content, str) or not content.strip():
+                continue
+
+            if log_entry.get("action") == "section_content" and section_index < 100:
+                main_contents[section_index] = content
+            elif log_entry.get("action") == "subsection_content" and section_index >= 100:
+                main_index = section_index // 100
+                sub_index = section_index % 100
+                subsection_contents.setdefault(main_index, {})[sub_index] = content
+
+        recovered_sections = []
+        outline_sections = outline_data.get("sections", []) or []
+        if outline_sections and all(
+            index in persisted_section_indexes
+            for index in range(1, len(outline_sections) + 1)
+        ):
+            return []
+
+        for index, section_data in enumerate(outline_sections, start=1):
+            if index in persisted_section_indexes or index not in main_contents:
+                continue
+
+            subsections = section_data.get("subsections", []) or []
+            recovered_subsections = subsection_contents.get(index, {})
+            if any((sub_index + 1) not in recovered_subsections for sub_index, _ in enumerate(subsections)):
+                continue
+
+            title = section_data.get("title") or f"第{index}章"
+            md_content = f"## {title}\n\n"
+            cleaned_main = cls._clean_section_content(main_contents[index], title)
+            if cleaned_main:
+                md_content += f"{cleaned_main}\n\n"
+
+            for sub_index, subsection_data in enumerate(subsections, start=1):
+                sub_title = subsection_data.get("title") or f"{title} 子章节{sub_index}"
+                cleaned_sub = cls._clean_section_content(
+                    recovered_subsections[sub_index],
+                    sub_title
+                )
+                md_content += f"### {sub_title}\n\n"
+                if cleaned_sub:
+                    md_content += f"{cleaned_sub}\n\n"
+
+            recovered_sections.append({
+                "filename": f"section_{index:02d}.md",
+                "section_index": index,
+                "subsection_index": None,
+                "content": cls._clean_persisted_markdown(md_content),
+                "is_subsection": False,
+                "recovered_from_log": True
+            })
+
+        return recovered_sections
     
     @classmethod
     def assemble_full_report(cls, report_id: str, outline: ReportOutline) -> str:
@@ -2373,12 +2806,15 @@ class ReportManager:
                 empty_count = 0
                 result_lines.append(line)
         
-        return '\n'.join(result_lines)
+        return cls._clean_persisted_markdown('\n'.join(result_lines))
     
     @classmethod
     def save_report(cls, report: Report) -> None:
         """保存报告元信息和完整报告"""
         cls._ensure_report_folder(report.report_id)
+
+        if report.markdown_content:
+            report.markdown_content = cls._clean_persisted_markdown(report.markdown_content)
         
         # 保存元信息JSON
         with open(cls._get_report_path(report.report_id), 'w', encoding='utf-8') as f:
@@ -2439,6 +2875,7 @@ class ReportManager:
             if os.path.exists(full_report_path):
                 with open(full_report_path, 'r', encoding='utf-8') as f:
                     markdown_content = f.read()
+        markdown_content = cls._clean_persisted_markdown(markdown_content)
         
         return Report(
             report_id=data['report_id'],

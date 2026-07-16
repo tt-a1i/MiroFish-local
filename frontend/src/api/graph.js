@@ -1,12 +1,45 @@
 import service, { requestWithRetry } from './index'
+import { setGraphTypeTranslations } from '../utils/entityTranslations.js'
+import { streamNdjson } from './stream'
 
 /**
- * 生成本体（上传文档和模拟需求）
- * @param {Object} data - 包含files, simulation_requirement, project_name等
+ * 联网搜索现实事件
+ * @param {Object} data - 包含 search_query, project_name, additional_context
  * @returns {Promise}
  */
-export function generateOntology(formData) {
-  return requestWithRetry(() => 
+export function searchSeedByKeyword(data) {
+  return requestWithRetry(() =>
+    service({
+      url: '/api/graph/seed/web-search',
+      method: 'post',
+      data
+    })
+  )
+}
+
+/**
+ * 流式联网搜索现实事件
+ * @param {Object} data - 包含 search_query, project_name, additional_context
+ * @param {Object} handlers - { onEvent }
+ * @returns {Promise<Object>}
+ */
+export function streamSearchSeedByKeyword(data, handlers = {}) {
+  return streamNdjson('/api/graph/seed/web-search/stream', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(data)
+  }, handlers)
+}
+
+/**
+ * 上传文件并分析现实事件（multipart 阶段）
+ * @param {FormData} formData - 包含 files, project_name, additional_context
+ * @returns {Promise}
+ */
+export function analyzeUploadedSeed(formData) {
+  return requestWithRetry(() =>
     service({
       url: '/api/graph/ontology/generate',
       method: 'post',
@@ -14,6 +47,39 @@ export function generateOntology(formData) {
       headers: {
         'Content-Type': 'multipart/form-data'
       }
+    })
+  )
+}
+
+/**
+ * 流式上传文件并分析现实事件
+ * @param {FormData} formData - 包含 files, project_name, additional_context
+ * @param {Object} handlers - { onEvent }
+ * @returns {Promise<Object>}
+ */
+export function streamAnalyzeUploadedSeed(formData, handlers = {}) {
+  return streamNdjson('/api/graph/seed/upload/stream', {
+    method: 'POST',
+    body: formData
+  }, handlers)
+}
+
+/**
+ * 基于已确认的项目和模拟需求生成本体。
+ * 兼容旧调用：如果传入 FormData，则退回 multipart 文件分析函数。
+ * @param {Object|FormData} data - JSON 阶段包含 project_id, simulation_requirement
+ * @returns {Promise}
+ */
+export function generateOntology(data) {
+  if (typeof FormData !== 'undefined' && data instanceof FormData) {
+    return analyzeUploadedSeed(data)
+  }
+
+  return requestWithRetry(() =>
+    service({
+      url: '/api/graph/ontology/generate',
+      method: 'post',
+      data
     })
   )
 }
@@ -54,6 +120,22 @@ export function getGraphData(graphId) {
   return service({
     url: `/api/graph/data/${graphId}`,
     method: 'get'
+  }).then(res => {
+    if (res.success && res.data?.type_translations) {
+      setGraphTypeTranslations(res.data.type_translations)
+    }
+    return res
+  })
+}
+
+/**
+ * 获取图谱实体/关系类型翻译表
+ * @returns {Promise}
+ */
+export function getGraphTypeTranslations() {
+  return service({
+    url: '/api/graph/type-translations',
+    method: 'get'
   })
 }
 
@@ -66,5 +148,30 @@ export function getProject(projectId) {
   return service({
     url: `/api/graph/project/${projectId}`,
     method: 'get'
+  })
+}
+
+/**
+ * 列出所有项目（跨浏览器共享）
+ * @param {Number} limit - 返回数量限制，默认50
+ * @returns {Promise}
+ */
+export function listProjects(limit = 50) {
+  return service({
+    url: '/api/graph/project/list',
+    method: 'get',
+    params: { limit }
+  })
+}
+
+/**
+ * 删除项目会话
+ * @param {String} projectId - 项目ID
+ * @returns {Promise}
+ */
+export function deleteProject(projectId) {
+  return service({
+    url: `/api/graph/project/${projectId}`,
+    method: 'delete'
   })
 }

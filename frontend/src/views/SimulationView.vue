@@ -1,9 +1,17 @@
 <template>
   <div class="main-view">
+    <WorkflowTopbar
+      :currentStep="2"
+      :projectId="projectData?.project_id"
+      :simulationId="currentSimulationId"
+      :reportId="currentReportId"
+      @missing-report="handleMissingReportNavigation"
+    />
+
     <!-- Header -->
     <header class="app-header">
       <div class="header-left">
-        <div class="brand" @click="router.push('/')">MIROFISH</div>
+        <span class="event-title">{{ projectTitle }}</span>
       </div>
       
       <div class="header-center">
@@ -15,7 +23,7 @@
             :class="{ active: viewMode === mode }"
             @click="viewMode = mode"
           >
-            {{ { graph: '图谱', split: '双栏', workbench: '工作台' }[mode] }}
+            {{ { graph: '群体', split: '双栏', workbench: '工作台' }[mode] }}
           </button>
         </div>
       </div>
@@ -26,10 +34,7 @@
           <span class="step-name">环境搭建</span>
         </div>
         <div class="step-divider"></div>
-        <span class="status-indicator" :class="statusClass">
-          <span class="dot"></span>
-          {{ statusText }}
-        </span>
+        <span class="status-indicator">{{ statusText }}</span>
       </div>
     </header>
 
@@ -57,6 +62,7 @@
           @next-step="handleNextStep"
           @add-log="addLog"
           @update-status="updateStatus"
+          @simulation-created="handleSimulationCreated"
         />
       </div>
     </main>
@@ -68,8 +74,12 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import GraphPanel from '../components/GraphPanel.vue'
 import Step2EnvSetup from '../components/Step2EnvSetup.vue'
+import WorkflowTopbar from '../components/WorkflowTopbar.vue'
 import { getProject, getGraphData } from '../api/graph'
 import { getSimulation, stopSimulation, getEnvStatus, closeSimulationEnv } from '../api/simulation'
+import { checkReportStatus } from '../api/report'
+import { BUILD_INFO } from '../utils/buildInfo'
+import { getProjectDisplayTitle } from '../utils/projectTitle.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -84,6 +94,7 @@ const viewMode = ref('split')
 
 // Data State
 const currentSimulationId = ref(route.params.simulationId)
+const currentReportId = ref('')
 const projectData = ref(null)
 const graphData = ref(null)
 const graphLoading = ref(false)
@@ -104,14 +115,14 @@ const rightPanelStyle = computed(() => {
 })
 
 // --- Status Computed ---
-const statusClass = computed(() => {
-  return currentStatus.value
+const statusText = computed(() => {
+  if (currentStatus.value === 'error') return '错误'
+  if (currentStatus.value === 'completed') return '就绪'
+  return '准备中'
 })
 
-const statusText = computed(() => {
-  if (currentStatus.value === 'error') return 'Error'
-  if (currentStatus.value === 'completed') return 'Ready'
-  return 'Preparing'
+const projectTitle = computed(() => {
+  return getProjectDisplayTitle(projectData.value)
 })
 
 // --- Helpers ---
@@ -125,6 +136,37 @@ const addLog = (msg) => {
 
 const updateStatus = (status) => {
   currentStatus.value = status
+}
+
+const handleSimulationCreated = (simulationId) => {
+  currentSimulationId.value = simulationId || currentSimulationId.value
+  addLog(`模拟实例同步完成: ${currentSimulationId.value}`)
+  loadReportContext()
+}
+
+const loadReportContext = async () => {
+  if (!currentSimulationId.value) {
+    currentReportId.value = ''
+    return
+  }
+  try {
+    const res = await checkReportStatus(currentSimulationId.value)
+    currentReportId.value = res.success && res.data?.report_id ? res.data.report_id : ''
+  } catch (err) {
+    currentReportId.value = ''
+  }
+}
+
+const handleMissingReportNavigation = async (targetStep) => {
+  await loadReportContext()
+  if (currentReportId.value) {
+    router.push({
+      name: targetStep === 5 ? 'Interaction' : 'Report',
+      params: { reportId: currentReportId.value }
+    })
+  } else {
+    addLog('当前模拟尚未生成报告，无法跳转到报告或深入对话。')
+  }
 }
 
 // --- Layout Methods ---
@@ -255,6 +297,7 @@ const loadSimulationData = async () => {
           if (projRes.data.graph_id) {
             await loadGraph(projRes.data.graph_id)
           }
+          await loadReportContext()
         }
       }
     } else {
@@ -288,6 +331,7 @@ const refreshGraph = () => {
 
 onMounted(async () => {
   addLog('SimulationView 初始化')
+  addLog(`前端版本: ${BUILD_INFO.gitSha} (${BUILD_INFO.buildTime})`)
   
   // 检查并关闭正在运行的模拟（用户从 Step 3 返回时）
   await checkAndStopRunningSimulation()
@@ -309,15 +353,33 @@ onMounted(async () => {
 
 /* Header */
 .app-header {
-  height: 60px;
+  min-height: 60px;
+  height: auto;
   border-bottom: 1px solid #EAEAEA;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(180px, 1fr);
   align-items: center;
-  justify-content: space-between;
-  padding: 0 24px;
+  column-gap: 18px;
+  padding: 10px 24px;
   background: #FFF;
   z-index: 100;
   position: relative;
+}
+
+.header-left {
+  min-width: 0;
+  max-width: min(42vw, 720px);
+}
+
+.event-title {
+  color: #1A1A2E;
+  display: block;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.45;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .brand {
@@ -329,9 +391,8 @@ onMounted(async () => {
 }
 
 .header-center {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
+  justify-self: center;
+  min-width: max-content;
 }
 
 .view-switcher {
@@ -363,7 +424,9 @@ onMounted(async () => {
 .header-right {
   display: flex;
   align-items: center;
+  justify-self: end;
   gap: 16px;
+  white-space: nowrap;
 }
 
 .workflow-step {
@@ -399,18 +462,28 @@ onMounted(async () => {
   font-weight: 500;
 }
 
-.dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #CCC;
+@media (max-width: 960px) {
+  .app-header {
+    grid-template-columns: 1fr;
+    gap: 10px;
+    align-items: stretch;
+    padding: 12px 16px;
+  }
+
+  .header-center,
+  .header-right {
+    justify-self: start;
+  }
+
+  .header-left {
+    max-width: 100%;
+  }
+
+  .header-right {
+    flex-wrap: wrap;
+    white-space: normal;
+  }
 }
-
-.status-indicator.processing .dot { background: #FF5722; animation: pulse 1s infinite; }
-.status-indicator.completed .dot { background: #4CAF50; }
-.status-indicator.error .dot { background: #F44336; }
-
-@keyframes pulse { 50% { opacity: 0.5; } }
 
 /* Content */
 .content-area {
@@ -431,4 +504,3 @@ onMounted(async () => {
   border-right: 1px solid #EAEAEA;
 }
 </style>
-

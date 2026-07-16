@@ -38,7 +38,13 @@
 docker-compose -f docker-compose.local.yml up -d neo4j
 ```
 
-验证：访问 http://localhost:7474，使用 `neo4j/password` 登录
+验证：访问 http://localhost:7474，使用 `neo4j/password` 登录；如果 `.env` 中改过 `NEO4J_PASSWORD`，则使用修改后的密码。
+
+如果 Neo4j 容器反复重启，先看初始化日志：
+
+```bash
+docker-compose -f docker-compose.local.yml logs --tail=120 neo4j
+```
 
 ### 2. 配置环境变量
 
@@ -56,7 +62,9 @@ LLM_MODEL_NAME=qwen-plus
 
 # Neo4j
 NEO4J_URI=bolt://localhost:7687
+# 使用仓库内置 docker-compose 时用户名固定为 neo4j。
 NEO4J_USER=neo4j
+# 初始密码至少 8 位，建议只使用字母、数字、下划线、连字符和点。
 NEO4J_PASSWORD=password
 
 # Embedding（DashScope）

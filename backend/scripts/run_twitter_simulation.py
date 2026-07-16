@@ -544,7 +544,7 @@ class TwitterSimulationRunner:
         # 加载时间配置
         time_config = self.config.get("time_config", {})
         total_hours = time_config.get("total_simulation_hours", 72)
-        minutes_per_round = time_config.get("minutes_per_round", 30)
+        minutes_per_round = time_config.get("minutes_per_round", 60)
         
         # 计算总轮数
         total_rounds = (total_hours * 60) // minutes_per_round

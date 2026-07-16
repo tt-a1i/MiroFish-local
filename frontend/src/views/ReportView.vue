@@ -1,9 +1,16 @@
 <template>
   <div class="main-view">
+    <WorkflowTopbar
+      :currentStep="4"
+      :projectId="projectData?.project_id"
+      :simulationId="simulationId"
+      :reportId="currentReportId"
+    />
+
     <!-- Header -->
     <header class="app-header">
       <div class="header-left">
-        <div class="brand" @click="router.push('/')">MIROFISH</div>
+        <span class="event-title">{{ projectTitle }}</span>
       </div>
       
       <div class="header-center">
@@ -15,7 +22,7 @@
             :class="{ active: viewMode === mode }"
             @click="viewMode = mode"
           >
-            {{ { graph: '图谱', split: '双栏', workbench: '工作台' }[mode] }}
+            {{ { graph: '群体', split: '双栏', workbench: '工作台' }[mode] }}
           </button>
         </div>
       </div>
@@ -26,10 +33,7 @@
           <span class="step-name">报告生成</span>
         </div>
         <div class="step-divider"></div>
-        <span class="status-indicator" :class="statusClass">
-          <span class="dot"></span>
-          {{ statusText }}
-        </span>
+        <span class="status-indicator">{{ statusText }}</span>
       </div>
     </header>
 
@@ -66,9 +70,11 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import GraphPanel from '../components/GraphPanel.vue'
 import Step4Report from '../components/Step4Report.vue'
+import WorkflowTopbar from '../components/WorkflowTopbar.vue'
 import { getProject, getGraphData } from '../api/graph'
 import { getSimulation } from '../api/simulation'
 import { getReport } from '../api/report'
+import { getProjectDisplayTitle } from '../utils/projectTitle.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -104,14 +110,14 @@ const rightPanelStyle = computed(() => {
 })
 
 // --- Status Computed ---
-const statusClass = computed(() => {
-  return currentStatus.value
+const statusText = computed(() => {
+  if (currentStatus.value === 'error') return '错误'
+  if (currentStatus.value === 'completed') return '已完成'
+  return '生成中'
 })
 
-const statusText = computed(() => {
-  if (currentStatus.value === 'error') return 'Error'
-  if (currentStatus.value === 'completed') return 'Completed'
-  return 'Generating'
+const projectTitle = computed(() => {
+  return getProjectDisplayTitle(projectData.value)
 })
 
 // --- Helpers ---
@@ -224,21 +230,38 @@ onMounted(() => {
 
 /* Header */
 .app-header {
-  height: 60px;
+  min-height: 60px;
+  height: auto;
   border-bottom: 1px solid #EAEAEA;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(180px, 1fr);
   align-items: center;
-  justify-content: space-between;
-  padding: 0 24px;
+  column-gap: 18px;
+  padding: 10px 24px;
   background: #FFF;
   z-index: 100;
   position: relative;
 }
 
+.header-left {
+  min-width: 0;
+  max-width: min(42vw, 720px);
+}
+
+.event-title {
+  color: #1A1A2E;
+  display: block;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.45;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
 .header-center {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
+  justify-self: center;
+  min-width: max-content;
 }
 
 .brand {
@@ -278,7 +301,9 @@ onMounted(() => {
 .header-right {
   display: flex;
   align-items: center;
+  justify-self: end;
   gap: 16px;
+  white-space: nowrap;
 }
 
 .workflow-step {
@@ -314,18 +339,28 @@ onMounted(() => {
   font-weight: 500;
 }
 
-.dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #CCC;
+@media (max-width: 960px) {
+  .app-header {
+    grid-template-columns: 1fr;
+    gap: 10px;
+    align-items: stretch;
+    padding: 12px 16px;
+  }
+
+  .header-center,
+  .header-right {
+    justify-self: start;
+  }
+
+  .header-left {
+    max-width: 100%;
+  }
+
+  .header-right {
+    flex-wrap: wrap;
+    white-space: normal;
+  }
 }
-
-.status-indicator.processing .dot { background: #FF9800; animation: pulse 1s infinite; }
-.status-indicator.completed .dot { background: #4CAF50; }
-.status-indicator.error .dot { background: #F44336; }
-
-@keyframes pulse { 50% { opacity: 0.5; } }
 
 /* Content */
 .content-area {
